@@ -1,3 +1,4 @@
+import CryptoKit
 import CoreTypes
 import Foundation
 import StatusCenter
@@ -91,20 +92,40 @@ public struct StatusServiceConfiguration: Sendable, Hashable, Codable {
         )
     }
 
-    private static func defaultDatabaseURL(for repositoryRoot: String) -> URL {
-        let baseDirectory = FileManager.default.urls(
+    static let appGroupIdentifier = "group.com.morningstar.MacTortoiseSVN"
+
+    public static func defaultDatabaseURL(for repositoryRoot: String) -> URL {
+        let fileManager = FileManager.default
+        // The app group container is the only location readable by the main app,
+        // the XPC service, and the sandboxed FinderSync extension alike.
+        let baseDirectory = fileManager.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupIdentifier
+        )
+        ?? fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        ).first
+        ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
 
-        let sanitizedRoot = repositoryRoot
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-            .replacingOccurrences(of: " ", with: "_")
+        let standardizedRoot = URL(fileURLWithPath: repositoryRoot).standardizedFileURL.path
+        let rootName = URL(fileURLWithPath: standardizedRoot).lastPathComponent
+        let prefix = sanitizedCacheFilePrefix(rootName.isEmpty ? "repository" : rootName)
+        let hash = SHA256.hash(data: Data(standardizedRoot.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
         return baseDirectory
             .appending(path: "MacTortoiseSVN")
             .appending(path: "StatusCache")
-            .appending(path: "\(sanitizedRoot).sqlite3")
+            .appending(path: "\(prefix)-\(hash).sqlite3")
+    }
+
+    private static func sanitizedCacheFilePrefix(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        let scalars = value.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "_"
+        }
+        let prefix = String(scalars).prefix(30)
+        return prefix.isEmpty ? "repository" : String(prefix)
     }
 }
 

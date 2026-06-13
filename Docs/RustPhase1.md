@@ -68,7 +68,7 @@ This is intentionally a stepping stone. It keeps the integration easy to debug w
 
 ## Near-term next steps
 
-1. Add persistent cache storage, likely SQLite, behind `status_engine`.
+1. Add native persistent cache storage behind Rust `status_engine`, or explicitly define the ownership split with the existing Swift SQLite cache.
 2. Add a stable IPC boundary between Swift and Rust.
-3. Route the Swift `StatusCenter` abstraction to this Rust engine.
+3. Promote the process-based Swift bridge into that stable boundary once packaging and lifecycle constraints are clear.
 4. Expand backend coverage for update, revert, log, diff, and shelve-related workflows.

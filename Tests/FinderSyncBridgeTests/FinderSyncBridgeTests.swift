@@ -42,6 +42,25 @@ final class FinderSyncBridgeTests: XCTestCase {
         ])
     }
 
+    func testBadgeResolverMarksWorkingCopyRootWhenAnyEntryIsDirty() {
+        let snapshot = BadgeSnapshot(
+            rootPath: "/repo",
+            generatedAt: Date(timeIntervalSince1970: 1),
+            entries: [
+                "/repo/README.md": .modified,
+            ]
+        )
+
+        let assignments = FinderBadgeResolver().assignments(
+            for: ["/repo"],
+            snapshot: snapshot
+        )
+
+        XCTAssertEqual(assignments, [
+            FinderBadgeAssignment(path: "/repo", kind: .descendantDirty),
+        ])
+    }
+
     func testContextMenuBuilderIncludesCommitAndDiffForDirtySelection() {
         let snapshot = BadgeSnapshot(
             rootPath: "/repo",
@@ -57,6 +76,7 @@ final class FinderSyncBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(actions.map(\.command), [
+            .updateWorkingCopy,
             .commitSelected,
             .diffSelected,
             .refreshNow,
@@ -71,12 +91,14 @@ final class FinderSyncBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(actions.map(\.command), [
+            .updateWorkingCopy,
             .commitSelected,
             .diffSelected,
             .refreshNow,
             .openInWorkbench,
         ])
         XCTAssertEqual(actions.map(\.isEnabled), [
+            true,
             false,
             false,
             true,
@@ -103,6 +125,7 @@ final class FinderSyncBridgeTests: XCTestCase {
             true,
             true,
             true,
+            true,
         ])
     }
 
@@ -122,6 +145,7 @@ final class FinderSyncBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(actions.map(\.title), [
+            "拉取",
             "提交所选...",
             "比较所选",
             "刷新缓存状态",

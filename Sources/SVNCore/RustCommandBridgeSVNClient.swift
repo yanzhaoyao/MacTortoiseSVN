@@ -277,6 +277,17 @@ public actor RustCommandBridgeSVNClient: SVNClient {
         self.subversionCLIRunner = subversionCLIRunner
     }
 
+    init(
+        configuration: SVNClientConfiguration = .recommended,
+        bridgeConfiguration: RustBridgeConfiguration,
+        runner: any RustBridgeCommandRunning
+    ) {
+        self.configuration = configuration
+        self.bridgeConfiguration = bridgeConfiguration
+        self.rustBridgeRunner = runner
+        self.subversionCLIRunner = SubversionCLICommandRunner()
+    }
+
     public func status(
         at rootPath: String,
         options: StatusQueryOptions,
@@ -338,18 +349,56 @@ public actor RustCommandBridgeSVNClient: SVNClient {
         name: String,
         context: SVNCommandContext
     ) async throws {
-        throw RustBridgeError.unsupportedOperation(
-            "Shelve is not wired through the phase-one Rust bridge yet."
+        let normalizedPaths = Array(Set(paths)).sorted()
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPaths.isEmpty else {
+            throw RustBridgeError.unsupportedOperation("Shelve requires at least one selected path.")
+        }
+        guard !trimmedName.isEmpty else {
+            throw RustBridgeError.unsupportedOperation("Shelve requires a shelf name.")
+        }
+
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: ["shelve", "--", trimmedName] + normalizedPaths,
+            workingDirectory: (normalizedPaths[0] as NSString).deletingLastPathComponent
         )
+        let result = try await subversionCLIRunner.run(request)
+
+        guard result.exitCode == 0 else {
+            throw RustBridgeError.commandFailed(
+                executablePath: "svn",
+                arguments: request.arguments,
+                exitCode: result.exitCode,
+                stderr: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
     }
 
     public func unshelve(
         name: String,
         context: SVNCommandContext
     ) async throws {
-        throw RustBridgeError.unsupportedOperation(
-            "Unshelve is not wired through the phase-one Rust bridge yet."
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw RustBridgeError.unsupportedOperation("Unshelve requires a shelf name.")
+        }
+
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: ["unshelve", "--", trimmedName],
+            workingDirectory: bridgeConfiguration.repositoryRoot
         )
+        let result = try await subversionCLIRunner.run(request)
+
+        guard result.exitCode == 0 else {
+            throw RustBridgeError.commandFailed(
+                executablePath: "svn",
+                arguments: request.arguments,
+                exitCode: result.exitCode,
+                stderr: result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
     }
 
     public func log(
@@ -360,7 +409,7 @@ public actor RustCommandBridgeSVNClient: SVNClient {
     ) async throws -> [SVNHistoryEntry] {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["log", "--xml", "-l", String(limit), "-r", String(revision), path],
+            arguments: ["log", "--xml", "-l", String(limit), "-r", String(revision), "--", path],
             workingDirectory: (path as NSString).deletingLastPathComponent
         )
         let result = try await subversionCLIRunner.run(request)
@@ -374,53 +423,7 @@ public actor RustCommandBridgeSVNClient: SVNClient {
             )
         }
 
-        return parseSVNLogOutput(result.stdout)
-    }
-
-    private func parseSVNLogOutput(_ xml: String) -> [SVNHistoryEntry] {
-        // Simple XML parsing for SVN log output
-        let entries: [SVNHistoryEntry] = xml
-            .components(separatedBy: "<logentry")
-            .compactMap { component in
-                guard component.count > 10 else { return nil }
-                let inner = String(component.dropFirst(9))
-                guard let firstClose = inner.firstIndex(of: ">"),
-                      let revMatch = inner.prefix(upTo: firstClose).split(separator: "revision=")
-                          .last?
-                          .split(separator: "\"")
-                          .first else { return nil }
-
-                guard let rev = Int64(revMatch) else { return nil }
-
-                let messageMatch = inner.components(separatedBy: "<msg>").last?
-                    .components(separatedBy: "</msg>").first
-                let message = messageMatch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-                let authorMatch = inner.components(separatedBy: "<author>").last?
-                    .components(separatedBy: "</author>").first
-                let author = authorMatch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-                let dateMatch = inner.components(separatedBy: "<date>").last?
-                    .components(separatedBy: "</date>").first
-                let dateString = dateMatch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let date = parseSVNDate(dateString)
-
-                return SVNHistoryEntry(
-                    revision: rev,
-                    author: author,
-                    date: date,
-                    message: message
-                )
-            }
-
-        return entries
-    }
-
-    private func parseSVNDate(_ dateString: String) -> Date {
-        // SVN date format: YYYY-MM-DDTHH:MM:SS.ssssZ
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: dateString) ?? Date()
+        return parseSubversionLogXML(result.stdout)
     }
 
     private func decodePayload(from stdout: String) throws -> RustBridgeStatusPayload {

@@ -7,6 +7,21 @@ enum WorkbenchNotice: Equatable {
     case noWorkingCopySelected
     case loadedEntries(entryCount: Int, badgeCount: Int)
     case refreshFailed
+    case checkingOutWorkingCopy
+    case checkedOutWorkingCopy(path: String, revision: Int64?)
+    case checkoutFailed
+    case importingPath
+    case importedPath(revision: Int64?)
+    case importFailed
+    case exportingWorkingCopy
+    case exportedWorkingCopy(path: String)
+    case exportFailed
+    case switchingWorkingCopy
+    case switchedWorkingCopy(revision: Int64?)
+    case switchFailed
+    case relocatingWorkingCopy
+    case relocatedWorkingCopy
+    case relocateFailed
     case updatingWorkingCopy
     case updatedWorkingCopy(pathCount: Int, revision: Int64?, hasConflicts: Bool)
     case updateFailed
@@ -32,6 +47,10 @@ enum WorkbenchNotice: Equatable {
     case openedRepositoryLocation
     case openedExternalDiff(String)
     case externalDiffLaunchFailed
+    case shelvedPaths(pathCount: Int, name: String)
+    case shelveFailed
+    case unshelved(String)
+    case unshelveFailed
     case committedPaths(pathCount: Int, revision: Int64)
     case commitFailed
     case deletedPath(String)
@@ -68,6 +87,36 @@ enum WorkbenchNotice: Equatable {
             )
         case .refreshFailed:
             return localizer.refreshFailed
+        case .checkingOutWorkingCopy:
+            return localizer.checkingOutWorkingCopyText
+        case let .checkedOutWorkingCopy(path, revision):
+            return localizer.checkoutSucceededText(path: path, revision: revision)
+        case .checkoutFailed:
+            return localizer.checkoutFailed
+        case .importingPath:
+            return localizer.importingPathText
+        case let .importedPath(revision):
+            return localizer.importSucceededText(revision: revision)
+        case .importFailed:
+            return localizer.importFailed
+        case .exportingWorkingCopy:
+            return localizer.exportingWorkingCopyText
+        case let .exportedWorkingCopy(path):
+            return localizer.exportSucceededText(path: path)
+        case .exportFailed:
+            return localizer.exportFailed
+        case .switchingWorkingCopy:
+            return localizer.switchingWorkingCopyText
+        case let .switchedWorkingCopy(revision):
+            return localizer.switchSucceededText(revision: revision)
+        case .switchFailed:
+            return localizer.switchFailed
+        case .relocatingWorkingCopy:
+            return localizer.relocatingWorkingCopyText
+        case .relocatedWorkingCopy:
+            return localizer.relocateSucceededText
+        case .relocateFailed:
+            return localizer.relocateFailed
         case .updatingWorkingCopy:
             return localizer.updatingWorkingCopyText
         case let .updatedWorkingCopy(pathCount, revision, hasConflicts):
@@ -114,6 +163,14 @@ enum WorkbenchNotice: Equatable {
             return localizer.openedExternalDiff(profileName)
         case .externalDiffLaunchFailed:
             return localizer.externalDiffLaunchFailed
+        case let .shelvedPaths(pathCount, name):
+            return localizer.shelveSucceededText(pathCount: pathCount, name: name)
+        case .shelveFailed:
+            return localizer.shelveFailed
+        case let .unshelved(name):
+            return localizer.unshelveSucceededText(name: name)
+        case .unshelveFailed:
+            return localizer.unshelveFailed
         case let .committedPaths(pathCount, revision):
             return localizer.commitSucceededText(
                 pathCount: pathCount,

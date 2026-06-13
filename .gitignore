@@ -9,3 +9,4 @@ rust/target/
 .tocodex/
 .vscode/
 dist/MacTortoiseSVN.app/
+Docs/CompetitiveRequirements.md

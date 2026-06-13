@@ -29,7 +29,7 @@ final class SubversionWorkspaceOperatorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(
             requests[0].arguments,
-            ["update", "/repo", "--depth", "infinity", "--accept", "postpone"]
+            ["update", "--depth", "infinity", "--accept", "postpone", "--", "/repo"]
         )
     }
 
@@ -57,7 +57,7 @@ final class SubversionWorkspaceOperatorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(
             requests[0].arguments,
-            ["revert", "/repo/Docs/Guide.md", "/repo/README.md", "--depth", "infinity"]
+            ["revert", "--depth", "infinity", "--", "/repo/Docs/Guide.md", "/repo/README.md"]
         )
     }
 
@@ -77,7 +77,7 @@ final class SubversionWorkspaceOperatorTests: XCTestCase {
 
         XCTAssertEqual(result.rootPath, "/repo")
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].arguments, ["cleanup", "/repo"])
+        XCTAssertEqual(requests[0].arguments, ["cleanup", "--", "/repo"])
     }
 
     func testResolveParsesResolvedPathsAndAcceptStrategy() async throws {
@@ -104,7 +104,114 @@ final class SubversionWorkspaceOperatorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(
             requests[0].arguments,
-            ["resolve", "/repo/Docs", "/repo/README.md", "--accept", "working", "--depth", "infinity"]
+            ["resolve", "--accept", "working", "--depth", "infinity", "--", "/repo/Docs", "/repo/README.md"]
+        )
+    }
+
+    func testCheckoutUsesCheckoutCommandAndParsesRevision() async throws {
+        let runner = RecordingSubversionRunner(
+            results: [
+                SubversionCLIInvocationResult(
+                    stdout: "Checked out revision 12.\n",
+                    stderr: "",
+                    exitCode: 0
+                ),
+            ]
+        )
+        let workspaceOperator = SubversionWorkspaceOperator(runner: runner)
+
+        let result = try await workspaceOperator.checkout(
+            repositoryURL: "https://svn.example.com/project/trunk",
+            destinationPath: "/work/project",
+            context: .foreground
+        )
+        let requests = await runner.requests()
+
+        XCTAssertEqual(result.revision, 12)
+        XCTAssertEqual(
+            requests[0].arguments,
+            ["checkout", "--depth", "infinity", "--", "https://svn.example.com/project/trunk", "/work/project"]
+        )
+    }
+
+    func testImportUsesImportCommandAndParsesCommittedRevision() async throws {
+        let runner = RecordingSubversionRunner(
+            results: [
+                SubversionCLIInvocationResult(
+                    stdout: "Adding         /work/import/README.md\nCommitted revision 13.\n",
+                    stderr: "",
+                    exitCode: 0
+                ),
+            ]
+        )
+        let workspaceOperator = SubversionWorkspaceOperator(runner: runner)
+
+        let result = try await workspaceOperator.importPath(
+            sourcePath: "/work/import",
+            repositoryURL: "https://svn.example.com/project/trunk",
+            message: "Initial import",
+            context: .foreground
+        )
+        let requests = await runner.requests()
+
+        XCTAssertEqual(result.revision, 13)
+        XCTAssertEqual(
+            requests[0].arguments,
+            ["import", "-m", "Initial import", "--", "/work/import", "https://svn.example.com/project/trunk"]
+        )
+    }
+
+    func testExportUsesExportCommand() async throws {
+        let runner = RecordingSubversionRunner(
+            results: [
+                SubversionCLIInvocationResult(stdout: "", stderr: "", exitCode: 0),
+            ]
+        )
+        let workspaceOperator = SubversionWorkspaceOperator(runner: runner)
+
+        _ = try await workspaceOperator.export(
+            source: "/work/project",
+            destinationPath: "/tmp/project-export",
+            context: .foreground
+        )
+        let requests = await runner.requests()
+
+        XCTAssertEqual(
+            requests[0].arguments,
+            ["export", "--force", "--", "/work/project", "/tmp/project-export"]
+        )
+    }
+
+    func testSwitchAndRelocateUseExpectedCommands() async throws {
+        let runner = RecordingSubversionRunner(
+            results: [
+                SubversionCLIInvocationResult(stdout: "At revision 21.\n", stderr: "", exitCode: 0),
+                SubversionCLIInvocationResult(stdout: "", stderr: "", exitCode: 0),
+            ]
+        )
+        let workspaceOperator = SubversionWorkspaceOperator(runner: runner)
+
+        let switchResult = try await workspaceOperator.switchWorkingCopy(
+            workingCopyPath: "/work/project",
+            repositoryURL: "https://svn.example.com/project/branches/release",
+            context: .foreground
+        )
+        _ = try await workspaceOperator.relocate(
+            workingCopyPath: "/work/project",
+            fromURL: "https://old.example.com/svn",
+            toURL: "https://new.example.com/svn",
+            context: .foreground
+        )
+        let requests = await runner.requests()
+
+        XCTAssertEqual(switchResult.revision, 21)
+        XCTAssertEqual(
+            requests[0].arguments,
+            ["switch", "--depth", "infinity", "--", "https://svn.example.com/project/branches/release", "/work/project"]
+        )
+        XCTAssertEqual(
+            requests[1].arguments,
+            ["relocate", "--", "https://old.example.com/svn", "https://new.example.com/svn", "/work/project"]
         )
     }
 }

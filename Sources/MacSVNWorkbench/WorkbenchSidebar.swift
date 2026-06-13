@@ -24,13 +24,15 @@ struct WorkbenchSidebar: View {
             sidebarFooter
         }
         .frame(maxHeight: .infinity)
-        .background(CommitPalette.chromeBackground.opacity(0.6))
+        .padding(.top, 4)
+        .background(.thinMaterial)
+        .background(CommitPalette.sidebarBackground)
     }
 
     // MARK: - Bookmarks
 
     private var bookmarksSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(localizer.sidebarWorkspacesTitle)
                     .font(.system(size: 11, weight: .bold, design: .rounded))
@@ -49,8 +51,8 @@ struct WorkbenchSidebar: View {
                 .buttonStyle(.plain)
                 .help(localizer.addWorkingCopyTitle)
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
 
             if model.bookmarks.isEmpty {
                 Button {
@@ -61,8 +63,8 @@ struct WorkbenchSidebar: View {
                         .foregroundStyle(CommitPalette.accent)
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 2) {
@@ -81,11 +83,11 @@ struct WorkbenchSidebar: View {
                     }
                     .padding(.horizontal, 8)
                 }
-                .frame(maxHeight: 200)
+                .frame(maxHeight: 168)
             }
 
             Divider()
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
                 .padding(.top, 4)
         }
     }
@@ -98,8 +100,8 @@ struct WorkbenchSidebar: View {
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundStyle(CommitPalette.textMuted)
                 .textCase(.uppercase)
-                .padding(.horizontal, 14)
-                .padding(.top, 12)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
 
             NavigationRow(
                 item: .changes,
@@ -122,21 +124,21 @@ struct WorkbenchSidebar: View {
                 icon: "clock.arrow.circlepath",
                 title: localizer.sidebarHistoryTitle,
                 isActive: model.activeNavigation == .history,
-                onSelect: { model.activeNavigation = .history }
+                onSelect: { model.showHistory() }
             )
         }
         .padding(.horizontal, 8)
-        .padding(.bottom, 8)
+        .padding(.bottom, 6)
     }
 
     // MARK: - Footer
 
     private var sidebarFooter: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             Divider()
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 if !model.rootPath.isEmpty {
                     Button {
                         model.addCurrentPathAsBookmark()
@@ -151,15 +153,30 @@ struct WorkbenchSidebar: View {
 
                 Spacer()
 
-                SettingsLink {
-                    Label(localizer.displaySettingsTitle, systemImage: "slider.horizontal.3")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(CommitPalette.textSecondary)
+                Button {
+                    withAnimation(.snappy(duration: 0.25)) {
+                        model.isSidebarVisible = false
+                    }
+                } label: {
+                    SidebarVisibilityGlyph(isSidebarVisible: true)
+                        .frame(width: 24, height: 24)
+                        .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .help(localizer.toggleSidebarTitle)
+
+                SettingsLink {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(CommitPalette.textSecondary)
+                        .frame(width: 24, height: 24)
+                        .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(localizer.displaySettingsTitle)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
         }
     }
 }
@@ -178,33 +195,47 @@ private struct BookmarkRow: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 8) {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(isActive ? CommitPalette.accent : CommitPalette.folderTint)
-                    .frame(width: 18)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isActive ? CommitPalette.sidebarSelection : Color.clear)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(bookmark.label)
-                        .font(.system(size: 12, weight: isActive ? .bold : .medium))
-                        .foregroundStyle(isActive ? CommitPalette.textPrimary : CommitPalette.textSecondary)
-                        .lineLimit(1)
-
-                    Text(bookmark.path)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(CommitPalette.textMuted)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                if isActive {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(CommitPalette.accent)
+                        .frame(width: 3)
+                        .padding(.vertical, 7)
                 }
 
-                Spacer(minLength: 0)
+                HStack(spacing: 7) {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isActive ? CommitPalette.accent : CommitPalette.folderTint)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            (isActive ? CommitPalette.accent.opacity(0.12) : CommitPalette.toolbarFill),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(bookmark.label)
+                            .font(.system(size: 11.5, weight: isActive ? .semibold : .medium))
+                            .foregroundStyle(isActive ? CommitPalette.textPrimary : CommitPalette.textSecondary)
+                            .lineLimit(1)
+
+                        Text(bookmark.path)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(CommitPalette.textMuted)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, isActive ? 9 : 6)
+                .padding(.trailing, 7)
+                .padding(.vertical, 4)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isActive ? CommitPalette.rowSelection : Color.clear)
-            )
+            .frame(minHeight: 32)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -267,24 +298,39 @@ private struct NavigationRow: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(isActive ? CommitPalette.accent : CommitPalette.textSecondary)
-                    .frame(width: 20)
-
-                Text(title)
-                    .font(.system(size: 13, weight: isActive ? .bold : .medium))
-                    .foregroundStyle(isActive ? CommitPalette.textPrimary : CommitPalette.textSecondary)
-
-                Spacer()
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
-            .background(
+            ZStack(alignment: .leading) {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isActive ? CommitPalette.rowSelection : Color.clear)
-            )
+                    .fill(isActive ? CommitPalette.sidebarSelection : Color.clear)
+
+                if isActive {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(CommitPalette.accent)
+                        .frame(width: 3)
+                        .padding(.vertical, 7)
+                }
+
+                HStack(spacing: 7) {
+                    Image(systemName: icon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isActive ? CommitPalette.accent : CommitPalette.textSecondary)
+                        .frame(width: 22, height: 22)
+                        .background(
+                            (isActive ? CommitPalette.accent.opacity(0.12) : CommitPalette.toolbarFill),
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+
+                    Text(title)
+                        .font(.system(size: 12, weight: isActive ? .semibold : .medium))
+                        .foregroundStyle(isActive ? CommitPalette.textPrimary : CommitPalette.textSecondary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, isActive ? 9 : 6)
+                .padding(.trailing, 7)
+                .padding(.vertical, 4)
+            }
+            .frame(height: 32)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

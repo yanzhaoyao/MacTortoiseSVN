@@ -31,16 +31,20 @@ public actor SQLiteStatusCacheStore {
 
     private let connection: SQLiteConnection
 
-    public init(databaseURL: URL) throws {
+    public init(databaseURL: URL, readOnly: Bool = false) throws {
         self.databaseURL = databaseURL
-        try FileManager.default.createDirectory(
-            at: databaseURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        if !readOnly {
+            try FileManager.default.createDirectory(
+                at: databaseURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        }
 
-        let database = try Self.openDatabase(at: databaseURL)
-        try Self.configureDatabase(database)
-        try Self.installSchema(on: database)
+        let database = try Self.openDatabase(at: databaseURL, readOnly: readOnly)
+        if !readOnly {
+            try Self.configureDatabase(database)
+            try Self.installSchema(on: database)
+        }
         self.connection = SQLiteConnection(handle: database)
     }
 
@@ -263,9 +267,9 @@ public actor SQLiteStatusCacheStore {
         }
     }
 
-    private static func openDatabase(at databaseURL: URL) throws -> OpaquePointer? {
+    private static func openDatabase(at databaseURL: URL, readOnly: Bool) throws -> OpaquePointer? {
         var database: OpaquePointer?
-        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        let flags = (readOnly ? SQLITE_OPEN_READONLY : (SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE)) | SQLITE_OPEN_FULLMUTEX
         let result = databaseURL.path.withCString { path in
             sqlite3_open_v2(path, &database, flags, nil)
         }
@@ -273,6 +277,9 @@ public actor SQLiteStatusCacheStore {
             throw SQLiteStatusCacheError(
                 "Failed to open SQLite database at \(databaseURL.path): \(lastErrorMessage(from: database))"
             )
+        }
+        if readOnly {
+            try execute("PRAGMA query_only = ON", on: database)
         }
         return database
     }

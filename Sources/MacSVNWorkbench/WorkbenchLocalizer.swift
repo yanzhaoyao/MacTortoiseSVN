@@ -1,6 +1,7 @@
 import CoreTypes
 import FinderSyncBridge
 import Foundation
+import SVNCore
 
 extension MacSVNLocalizer {
     fileprivate var useChineseWorkbenchText: Bool {
@@ -225,6 +226,10 @@ extension MacSVNLocalizer {
         useChineseWorkbenchText ? "正在加载版本详情..." : "Loading revision detail..."
     }
 
+    var loadingRecentHistory: String {
+        useChineseWorkbenchText ? "正在加载提交历史..." : "Loading commit history..."
+    }
+
     var logMessageTitle: String {
         useChineseWorkbenchText ? "提交说明" : "Commit Message"
     }
@@ -255,6 +260,122 @@ extension MacSVNLocalizer {
 
     var updateFailed: String {
         useChineseWorkbenchText ? "更新工作副本失败。" : "Working copy update failed."
+    }
+
+    var checkoutWorkingCopy: String {
+        useChineseWorkbenchText ? "检出" : "Checkout"
+    }
+
+    var importToRepository: String {
+        useChineseWorkbenchText ? "导入" : "Import"
+    }
+
+    var exportWorkingCopy: String {
+        useChineseWorkbenchText ? "导出" : "Export"
+    }
+
+    var switchWorkingCopy: String {
+        useChineseWorkbenchText ? "切换" : "Switch"
+    }
+
+    var relocateWorkingCopy: String {
+        useChineseWorkbenchText ? "重定位" : "Relocate"
+    }
+
+    var checkingOutWorkingCopyText: String {
+        useChineseWorkbenchText ? "正在检出工作副本..." : "Checking out working copy..."
+    }
+
+    func checkoutSucceededText(path: String, revision: Int64?) -> String {
+        let name = (path as NSString).lastPathComponent
+        let revisionText = revision.map { useChineseWorkbenchText ? "，版本 r\($0)" : ", revision r\($0)" } ?? ""
+        return useChineseWorkbenchText ? "已检出 \(name)\(revisionText)。" : "Checked out \(name)\(revisionText)."
+    }
+
+    var checkoutFailed: String {
+        useChineseWorkbenchText ? "检出失败。" : "Checkout failed."
+    }
+
+    var importingPathText: String {
+        useChineseWorkbenchText ? "正在导入到仓库..." : "Importing into repository..."
+    }
+
+    func importSucceededText(revision: Int64?) -> String {
+        let revisionText = revision.map { useChineseWorkbenchText ? "版本 r\($0)" : "revision r\($0)" }
+        if let revisionText {
+            return useChineseWorkbenchText ? "导入完成，\(revisionText)。" : "Import completed at \(revisionText)."
+        }
+        return useChineseWorkbenchText ? "导入完成。" : "Import completed."
+    }
+
+    var importFailed: String {
+        useChineseWorkbenchText ? "导入失败。" : "Import failed."
+    }
+
+    var exportingWorkingCopyText: String {
+        useChineseWorkbenchText ? "正在导出..." : "Exporting..."
+    }
+
+    func exportSucceededText(path: String) -> String {
+        let name = (path as NSString).lastPathComponent
+        return useChineseWorkbenchText ? "已导出到 \(name)。" : "Exported to \(name)."
+    }
+
+    var exportFailed: String {
+        useChineseWorkbenchText ? "导出失败。" : "Export failed."
+    }
+
+    var switchingWorkingCopyText: String {
+        useChineseWorkbenchText ? "正在切换工作副本..." : "Switching working copy..."
+    }
+
+    func switchSucceededText(revision: Int64?) -> String {
+        let revisionText = revision.map { useChineseWorkbenchText ? "，当前版本 r\($0)" : ", now at r\($0)" } ?? ""
+        return useChineseWorkbenchText ? "工作副本已切换\(revisionText)。" : "Working copy switched\(revisionText)."
+    }
+
+    var switchFailed: String {
+        useChineseWorkbenchText ? "切换工作副本失败。" : "Switch failed."
+    }
+
+    var relocatingWorkingCopyText: String {
+        useChineseWorkbenchText ? "正在重定位工作副本..." : "Relocating working copy..."
+    }
+
+    var relocateSucceededText: String {
+        useChineseWorkbenchText ? "工作副本已重定位。" : "Working copy relocated."
+    }
+
+    var relocateFailed: String {
+        useChineseWorkbenchText ? "重定位工作副本失败。" : "Relocate failed."
+    }
+
+    var repositoryURLPrompt: String {
+        useChineseWorkbenchText ? "仓库 URL" : "Repository URL"
+    }
+
+    var sourcePathPrompt: String {
+        useChineseWorkbenchText ? "源路径" : "Source Path"
+    }
+
+    var destinationPathPrompt: String {
+        useChineseWorkbenchText ? "目标路径" : "Destination Path"
+    }
+
+    var fromRepositoryURLPrompt: String {
+        useChineseWorkbenchText ? "原仓库 URL" : "From Repository URL"
+    }
+
+    var toRepositoryURLPrompt: String {
+        useChineseWorkbenchText ? "新仓库 URL" : "To Repository URL"
+    }
+
+    var importMessagePrompt: String {
+        useChineseWorkbenchText ? "导入提交说明" : "Import Commit Message"
+    }
+
+    var runButtonTitle: String {
+        useChineseWorkbenchText ? "执行" : "Run"
     }
 
     var cleaningWorkingCopyText: String {
@@ -288,6 +409,49 @@ extension MacSVNLocalizer {
             return "已更新 \(pathCount) 个路径\(revisionSuffix)\(conflictSuffix)"
         }
         return "Updated \(pathCount) path(s)\(revisionSuffix)\(conflictSuffix)"
+    }
+
+    var updateActivityTitle: String {
+        useChineseWorkbenchText ? "拉取状态" : "Update Status"
+    }
+
+    var updateActivityRunningTitle: String {
+        useChineseWorkbenchText ? "正在拉取工作副本" : "Updating Working Copy"
+    }
+
+    var updateActivityCompletedTitle: String {
+        useChineseWorkbenchText ? "拉取完成" : "Update Completed"
+    }
+
+    var updateActivityFailedTitle: String {
+        useChineseWorkbenchText ? "拉取失败" : "Update Failed"
+    }
+
+    var updateActivityNoPathChanges: String {
+        useChineseWorkbenchText ? "SVN 没有返回变更路径，工作副本已是最新或只有版本元数据变化。" : "SVN did not report changed paths; the working copy is current or only revision metadata changed."
+    }
+
+    func updateActivityRevisionText(_ revision: Int64?) -> String {
+        if let revision {
+            return useChineseWorkbenchText ? "版本 r\(revision)" : "Revision r\(revision)"
+        }
+        return useChineseWorkbenchText ? "版本未知" : "Revision unknown"
+    }
+
+    func updateActivityPathCountText(_ count: Int) -> String {
+        useChineseWorkbenchText ? "\(count) 个路径" : "\(count) path(s)"
+    }
+
+    var updateActivityConflictText: String {
+        useChineseWorkbenchText ? "存在冲突" : "Conflicts"
+    }
+
+    var updateActivityCleanText: String {
+        useChineseWorkbenchText ? "无冲突" : "No conflicts"
+    }
+
+    func updateActivityMorePathsText(_ count: Int) -> String {
+        useChineseWorkbenchText ? "另外 \(count) 个路径未显示" : "\(count) more path(s) not shown"
     }
 
     func revertingPathsText(pathCount: Int) -> String {
@@ -486,6 +650,104 @@ extension MacSVNLocalizer {
         useChineseWorkbenchText ? "在外部工具中比较" : "Open in External Diff"
     }
 
+    var shelveSelected: String {
+        useChineseWorkbenchText ? "搁置" : "Shelve"
+    }
+
+    var unshelveSelected: String {
+        useChineseWorkbenchText ? "取回搁置" : "Unshelve"
+    }
+
+    var addPreviewTitle: String {
+        useChineseWorkbenchText ? "预览添加" : "Preview Add"
+    }
+
+    func addPreviewMessage(addableCount: Int, skippedCount: Int, directoryCount: Int) -> String {
+        if useChineseWorkbenchText {
+            return "添加前请确认 \(addableCount) 个可添加路径、\(skippedCount) 个跳过路径，以及 \(directoryCount) 个目录。"
+        }
+        return "Review \(addableCount) addable path(s), \(skippedCount) skipped path(s), and \(directoryCount) director\(directoryCount == 1 ? "y" : "ies") before adding."
+    }
+
+    var addPreviewDepthTitle: String {
+        useChineseWorkbenchText ? "深度" : "Depth"
+    }
+
+    var addPreviewAddableTitle: String {
+        useChineseWorkbenchText ? "将添加" : "Will add"
+    }
+
+    var addPreviewSkippedTitle: String {
+        useChineseWorkbenchText ? "跳过" : "Skipped"
+    }
+
+    var addPreviewDirectoriesTitle: String {
+        useChineseWorkbenchText ? "需要确认的目录" : "Directories need confirmation"
+    }
+
+    var addPreviewConfirmButton: String {
+        useChineseWorkbenchText ? "添加" : "Add"
+    }
+
+    var addPreviewCancelButton: String {
+        useChineseWorkbenchText ? "取消" : "Cancel"
+    }
+
+    func svnDepthTitle(_ depth: SVNDepth) -> String {
+        switch depth {
+        case .empty:
+            return useChineseWorkbenchText ? "仅目录" : "Empty"
+        case .files:
+            return useChineseWorkbenchText ? "文件" : "Files"
+        case .immediates:
+            return useChineseWorkbenchText ? "直接子项" : "Immediates"
+        case .infinity:
+            return useChineseWorkbenchText ? "递归全部" : "Infinity"
+        }
+    }
+
+    var shelveNameTitle: String {
+        useChineseWorkbenchText ? "搁置名称" : "Shelf Name"
+    }
+
+    var shelveNamePrompt: String {
+        useChineseWorkbenchText
+            ? "请为本次搁置命名，然后将所选更改移出工作副本。"
+            : "Name this shelf before moving the selected changes out of the working copy."
+    }
+
+    var unshelveNamePrompt: String {
+        useChineseWorkbenchText
+            ? "请输入要恢复到工作副本的搁置名称。"
+            : "Enter the shelf name to restore into the working copy."
+    }
+
+    var shelveConfirmButton: String {
+        useChineseWorkbenchText ? "搁置" : "Shelve"
+    }
+
+    var unshelveConfirmButton: String {
+        useChineseWorkbenchText ? "取回" : "Unshelve"
+    }
+
+    func shelveSucceededText(pathCount: Int, name: String) -> String {
+        useChineseWorkbenchText
+            ? "已将 \(pathCount) 个路径搁置为 \(name)。"
+            : "Shelved \(pathCount) path(s) as \(name)."
+    }
+
+    func unshelveSucceededText(name: String) -> String {
+        useChineseWorkbenchText ? "已取回搁置 \(name)。" : "Unshelved \(name)."
+    }
+
+    var shelveFailed: String {
+        useChineseWorkbenchText ? "搁置失败。" : "Shelve failed."
+    }
+
+    var unshelveFailed: String {
+        useChineseWorkbenchText ? "取回搁置失败。" : "Unshelve failed."
+    }
+
     var externalDiffSelectEntryFirst: String {
         useChineseWorkbenchText ? "请先选择一个已纳管的工作副本条目再打开外部比较。" : "Select a versioned working-copy entry before opening an external diff."
     }
@@ -664,15 +926,15 @@ extension MacSVNLocalizer {
     }
 
     var compactWindowPresetTitle: String {
-        useChineseWorkbenchText ? "紧凑提交窗" : "Compact Commit Window"
+        useChineseWorkbenchText ? "简易模式" : "Simple Mode"
     }
 
     var spaciousWindowPresetTitle: String {
-        useChineseWorkbenchText ? "完整工作台" : "Full Workspace"
+        useChineseWorkbenchText ? "专业模式" : "Pro Mode"
     }
 
     var hideDiffPreviewInCompactTitle: String {
-        useChineseWorkbenchText ? "紧凑窗口自动隐藏差异预览" : "Hide diff preview automatically in compact windows"
+        useChineseWorkbenchText ? "简易模式自动隐藏差异预览" : "Hide diff preview automatically in Simple Mode"
     }
 
     var finderLaunchPreferenceHint: String {
@@ -687,18 +949,18 @@ extension MacSVNLocalizer {
 
     var compactWindowHint: String {
         useChineseWorkbenchText
-            ? "当前是紧凑提交窗，只保留工作路径、更改树、提交消息和关键勾选项。更多信息可在设置或放大窗口后查看。"
-            : "You are in the compact commit window. It keeps only the working path, change tree, commit message, and key toggles visible. Expand the window or open Settings for more."
+            ? "当前是简易模式，只保留刷新/更新、选择、添加和提交等基础操作。高级操作可切换到专业模式后使用。"
+            : "You are in Simple Mode. It keeps only basic actions such as refresh/update, selection, add, and commit. Switch to Pro Mode for advanced actions."
     }
 
     var compactDiffHiddenHint: String {
         useChineseWorkbenchText
-            ? "差异预览已在紧凑窗口中隐藏。需要时可在设置里关闭这条规则，或直接放大窗口。"
-            : "Diff preview is hidden in compact windows. Disable this rule in Settings or enlarge the window when you need it."
+            ? "差异预览已在简易模式中隐藏。需要时可在设置里关闭这条规则，或切换到专业模式。"
+            : "Diff preview is hidden in Simple Mode. Disable this rule in Settings or switch to Pro Mode when you need it."
     }
 
     var compactWindowModeSummary: String {
-        useChineseWorkbenchText ? "紧凑提交模式" : "Compact Commit Mode"
+        useChineseWorkbenchText ? "简易模式" : "Simple Mode"
     }
 
     var collapsedPanelsTitle: String {
@@ -788,6 +1050,53 @@ extension MacSVNLocalizer {
 
     var sidebarSettingsTitle: String {
         useChineseWorkbenchText ? "侧边栏" : "Sidebar"
+    }
+
+    var backendSettingsTitle: String {
+        useChineseWorkbenchText ? "SVN 后端" : "SVN Backend"
+    }
+
+    var backendModeTitle: String {
+        useChineseWorkbenchText ? "兼容模式" : "Compatibility Mode"
+    }
+
+    func title(for backendMode: WorkbenchBackendMode) -> String {
+        switch backendMode {
+        case .bundledRust:
+            return useChineseWorkbenchText ? "内置 Rust 桥接" : "Bundled Rust Bridge"
+        case .systemCommandLine:
+            return useChineseWorkbenchText ? "系统 svn 命令" : "System svn"
+        case .xcodeBundled:
+            return useChineseWorkbenchText ? "Xcode 内置 SVN" : "Xcode Bundled SVN"
+        }
+    }
+
+    var preserveModificationTimesTitle: String {
+        useChineseWorkbenchText ? "保留文件修改时间" : "Preserve file modification times"
+    }
+
+    var integrationSettingsTitle: String {
+        useChineseWorkbenchText ? "集成" : "Integrations"
+    }
+
+    var defaultExternalDiffToolTitle: String {
+        useChineseWorkbenchText ? "默认外部比较工具" : "Default external diff tool"
+    }
+
+    var performanceSettingsTitle: String {
+        useChineseWorkbenchText ? "性能" : "Performance"
+    }
+
+    var maxConcurrentOperationsTitle: String {
+        useChineseWorkbenchText ? "最大并发操作" : "Max concurrent operations"
+    }
+
+    var badgeEntryLimitTitle: String {
+        useChineseWorkbenchText ? "徽标缓存上限" : "Badge cache limit"
+    }
+
+    var maxIncrementalDirtyPathsTitle: String {
+        useChineseWorkbenchText ? "增量刷新路径阈值" : "Incremental refresh path limit"
     }
 
     var showSidebarTitle: String {

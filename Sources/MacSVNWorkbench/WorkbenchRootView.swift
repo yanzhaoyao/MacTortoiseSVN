@@ -42,8 +42,7 @@ struct WorkbenchRootView: View {
     private var isDiffPreviewCollapsed = false
     @AppStorage("MacTortoiseSVN.workbench.collapse.inspector")
     private var isInspectorCollapsed = false
-    @AppStorage("MacTortoiseSVN.workbench.externalDiffTool")
-    private var selectedExternalDiffToolID = ""
+    @State private var expandedChangeNodeIDs: Set<String> = []
 
     private var localizer: MacSVNLocalizer {
         model.localizer
@@ -62,7 +61,7 @@ struct WorkbenchRootView: View {
     }
 
     private var selectedExternalToolProfile: ExternalToolProfile? {
-        if let storedProfile = model.externalTools.first(where: { $0.id == selectedExternalDiffToolID }) {
+        if let storedProfile = model.externalTools.first(where: { $0.id == model.selectedExternalDiffToolID }) {
             return storedProfile
         }
 
@@ -72,7 +71,7 @@ struct WorkbenchRootView: View {
     private var externalToolSelectionBinding: Binding<String> {
         Binding(
             get: { selectedExternalToolProfile?.id ?? "" },
-            set: { selectedExternalDiffToolID = $0 }
+            set: { model.selectedExternalDiffToolID = $0 }
         )
     }
 
@@ -86,9 +85,7 @@ struct WorkbenchRootView: View {
 
                 HStack(spacing: 0) {
                     if model.isSidebarVisible {
-                        WorkbenchSidebar(model: model)
-                            .frame(width: WorkbenchLayout.sidebarWidth)
-                        Divider()
+                        sidebarColumn
                     }
 
                     Group {
@@ -111,6 +108,7 @@ struct WorkbenchRootView: View {
                     }
                     .padding(layout.outerPadding)
                 }
+                .animation(.snappy(duration: 0.28, extraBounce: 0.03), value: model.isSidebarVisible)
             }
         }
         .background(.regularMaterial)
@@ -138,6 +136,21 @@ struct WorkbenchRootView: View {
         .tint(CommitPalette.accent)
     }
 
+    private var sidebarColumn: some View {
+        HStack(spacing: 0) {
+            WorkbenchSidebar(model: model)
+                .frame(width: WorkbenchLayout.sidebarWidth)
+            Divider()
+        }
+        .transition(
+            .asymmetric(
+                insertion: .move(edge: .leading).combined(with: .opacity),
+                removal: .move(edge: .leading).combined(with: .opacity)
+            )
+        )
+        .zIndex(1)
+    }
+
     // MARK: - Workspace Layouts
 
     private func wideWorkspace(layout: WorkbenchLayout) -> some View {
@@ -159,6 +172,7 @@ struct WorkbenchRootView: View {
         VStack(spacing: CommitPalette.workspaceGap) {
             topBar(layout: layout)
             collapsedPaneBar(layout: layout)
+            updateActivityBanner
             
             content()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -168,9 +182,173 @@ struct WorkbenchRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    @ViewBuilder
+    private var updateActivityBanner: some View {
+        if let activity = model.updateActivity {
+            let tint = updateActivityTint(activity)
+            VStack(alignment: .leading, spacing: 10) {
+                ViewThatFits {
+                    HStack(alignment: .center, spacing: 12) {
+                        updateActivityIcon(activity, tint: tint)
+                        updateActivityHeader(activity)
+                        Spacer(minLength: 0)
+                        updateActivityMetrics(activity, tint: tint)
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .center, spacing: 12) {
+                            updateActivityIcon(activity, tint: tint)
+                            updateActivityHeader(activity)
+                        }
+                        updateActivityMetrics(activity, tint: tint)
+                    }
+                }
+
+                updateActivityPaths(activity)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous))
+            .background(CommitPalette.chromeBackground, in: RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [tint.opacity(0.35), CommitPalette.glassHighlight, Color.clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.7
+                    )
+            )
+            .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
+        }
+    }
+
+    @ViewBuilder
+    private func updateActivityIcon(_ activity: WorkbenchModel.UpdateActivity, tint: Color) -> some View {
+        switch activity.state {
+        case .running:
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 24, height: 24)
+        case .completed:
+            Image(systemName: activity.hasConflicts ? "exclamationmark.triangle.fill" : "arrow.down.circle.fill")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 24, height: 24)
+        case .failed:
+            Image(systemName: "xmark.octagon.fill")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 24, height: 24)
+        }
+    }
+
+    private func updateActivityHeader(_ activity: WorkbenchModel.UpdateActivity) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(updateActivityTitle(activity))
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(CommitPalette.textPrimary)
+
+            Text(activity.rootPath)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(CommitPalette.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
+    private func updateActivityMetrics(_ activity: WorkbenchModel.UpdateActivity, tint: Color) -> some View {
+        HStack(spacing: 8) {
+            InlineCapsule(text: localizer.updateActivityRevisionText(activity.revision), tint: tint)
+            InlineCapsule(text: localizer.updateActivityPathCountText(activity.displayPaths.count), tint: CommitPalette.accent)
+            InlineCapsule(
+                text: activity.hasConflicts ? localizer.updateActivityConflictText : localizer.updateActivityCleanText,
+                tint: activity.hasConflicts ? Color.orange : Color.green
+            )
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private func updateActivityPaths(_ activity: WorkbenchModel.UpdateActivity) -> some View {
+        switch activity.state {
+        case let .failed(message):
+            Text(message)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(CommitPalette.error)
+                .fixedSize(horizontal: false, vertical: true)
+        case .running:
+            Text(localizer.updatingWorkingCopyText)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(CommitPalette.textSecondary)
+        case .completed:
+            if activity.displayPaths.isEmpty {
+                Text(localizer.updateActivityNoPathChanges)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(CommitPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                let visiblePaths = Array(activity.displayPaths.prefix(3))
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(visiblePaths, id: \.self) { path in
+                        HStack(spacing: 6) {
+                            Image(systemName: "doc.text")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(CommitPalette.textMuted)
+                            Text(path)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(CommitPalette.textSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+
+                    if activity.displayPaths.count > visiblePaths.count {
+                        Text(localizer.updateActivityMorePathsText(activity.displayPaths.count - visiblePaths.count))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(CommitPalette.textMuted)
+                    }
+                }
+            }
+        }
+    }
+
+    private func updateActivityTitle(_ activity: WorkbenchModel.UpdateActivity) -> String {
+        switch activity.state {
+        case .running:
+            return localizer.updateActivityRunningTitle
+        case .completed:
+            return localizer.updateActivityCompletedTitle
+        case .failed:
+            return localizer.updateActivityFailedTitle
+        }
+    }
+
+    private func updateActivityTint(_ activity: WorkbenchModel.UpdateActivity) -> Color {
+        switch activity.state {
+        case .running:
+            return CommitPalette.accent
+        case .completed:
+            return activity.hasConflicts ? Color.orange : Color.green
+        case .failed:
+            return CommitPalette.error
+        }
+    }
+
     // MARK: - Top Bar
 
+    @ViewBuilder
     private func topBar(layout: WorkbenchLayout) -> some View {
+        if layout.usesMinimalCommitMode {
+            compactTopBar(layout: layout)
+        } else {
+            fullTopBar(layout: layout)
+        }
+    }
+
+    private func fullTopBar(layout: WorkbenchLayout) -> some View {
         VStack(spacing: 10) {
             ViewThatFits {
                 HStack(alignment: .center, spacing: 14) {
@@ -239,23 +417,70 @@ struct WorkbenchRootView: View {
             RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [Color.primary.opacity(0.15), Color.clear, Color.clear],
+                        colors: [CommitPalette.glassHighlight, Color.primary.opacity(0.08), Color.clear],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 0.5
+                    lineWidth: 0.7
                 )
         )
-        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
+        .shadow(color: Color.black.opacity(0.08), radius: 14, x: 0, y: 5)
+    }
+
+    private func compactTopBar(layout: WorkbenchLayout) -> some View {
+        VStack(spacing: isTopBarCollapsed ? 0 : 8) {
+            HStack(alignment: .center, spacing: 8) {
+                compactBrandBlock
+                sidebarToggleButton
+                topBarCollapseButton
+                Spacer(minLength: 0)
+
+                if !isTopBarCollapsed {
+                    compactLanguageMenu
+                }
+
+                compactSettingsLink
+            }
+
+            if !isTopBarCollapsed {
+                ViewThatFits {
+                    HStack(spacing: 8) {
+                        compactWorkingCopyField
+                        actionBar(compact: true)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        compactWorkingCopyField
+                        actionBar(compact: true)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(CommitPalette.chromeBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [CommitPalette.glassHighlight, Color.primary.opacity(0.07), Color.clear],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.6
+                )
+        )
+        .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 3)
     }
 
     private var sidebarToggleButton: some View {
         Button {
-            model.isSidebarVisible.toggle()
+            withAnimation(.snappy(duration: 0.28, extraBounce: 0.03)) {
+                model.isSidebarVisible.toggle()
+            }
         } label: {
-            Image(systemName: model.isSidebarVisible ? "sidebar.left" : "sidebar.left.hide")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(CommitPalette.textSecondary)
+            SidebarVisibilityGlyph(isSidebarVisible: model.isSidebarVisible)
                 .frame(width: 30, height: 30)
                 .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
@@ -281,15 +506,7 @@ struct WorkbenchRootView: View {
 
     private var brandBlock: some View {
         HStack(alignment: .center, spacing: 14) {
-            Image("tmsTUCenter", bundle: .module)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 34, height: 34)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(CommitPalette.border, lineWidth: 1)
-                )
+            workbenchIcon(size: 34, cornerRadius: 10, borderWidth: 1)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(localizer.commitWindowTitle)
@@ -302,6 +519,41 @@ struct WorkbenchRootView: View {
                     .lineLimit(1)
             }
         }
+    }
+
+    private var compactBrandBlock: some View {
+        HStack(alignment: .center, spacing: 8) {
+            workbenchIcon(size: 24, cornerRadius: 7, borderWidth: 0.8)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(localizer.commitWindowTitle)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(CommitPalette.textPrimary)
+
+                Text(model.rootPath.isEmpty ? localizer.compactWindowPresetTitle : (model.rootPath as NSString).lastPathComponent)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(CommitPalette.textSecondary)
+                    .lineLimit(1)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func workbenchIcon(size: CGFloat, cornerRadius: CGFloat, borderWidth: CGFloat) -> some View {
+        let bundledImage = NSImage(named: "MacTortoiseSVNIcon")
+            ?? Bundle.module.image(forResource: "MacTortoiseSVNIcon")
+            ?? NSImage(named: NSImage.applicationIconName)
+            ?? NSImage(size: NSSize(width: size, height: size))
+
+        return Image(nsImage: bundledImage)
+            .resizable()
+            .scaledToFill()
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(CommitPalette.border, lineWidth: borderWidth)
+            )
     }
 
     private var summaryBlock: some View {
@@ -347,6 +599,34 @@ struct WorkbenchRootView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private var compactWorkingCopyField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "folder")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CommitPalette.textSecondary)
+
+            TextField(localizer.chooseWorkingCopyPlaceholder, text: $model.rootPath)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .onSubmit {
+                    model.refreshSnapshot(forceFullRefresh: true)
+                }
+
+            Button {
+                model.chooseWorkingCopy()
+            } label: {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CommitPalette.accent)
+            .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .help(localizer.chooseFolder)
+        }
+        .frame(minWidth: 260, maxWidth: .infinity)
+    }
+
     private func actionBar(compact: Bool) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -358,12 +638,38 @@ struct WorkbenchRootView: View {
                     model.refreshSnapshot(forceFullRefresh: true)
                 }
 
-                ToolbarActionButton(
-                    title: localizer.refreshIfNeeded,
-                    symbol: "arrow.triangle.2.circlepath",
-                    isEnabled: model.canRefresh
-                ) {
-                    model.refreshSnapshot(forceFullRefresh: false)
+                if !compact {
+                    ToolbarActionButton(
+                        title: localizer.refreshIfNeeded,
+                        symbol: "arrow.triangle.2.circlepath",
+                        isEnabled: model.canRefresh
+                    ) {
+                        model.refreshSnapshot(forceFullRefresh: false)
+                    }
+
+                    ToolbarActionButton(
+                        title: localizer.checkoutWorkingCopy,
+                        symbol: "square.and.arrow.down",
+                        isEnabled: !model.isBusy
+                    ) {
+                        model.checkoutWorkingCopy()
+                    }
+
+                    ToolbarActionButton(
+                        title: localizer.importToRepository,
+                        symbol: "square.and.arrow.up",
+                        isEnabled: !model.isBusy
+                    ) {
+                        model.importToRepository()
+                    }
+
+                    ToolbarActionButton(
+                        title: localizer.exportWorkingCopy,
+                        symbol: "archivebox",
+                        isEnabled: !model.isBusy
+                    ) {
+                        model.exportWorkingCopy()
+                    }
                 }
 
                 ToolbarActionButton(
@@ -374,20 +680,38 @@ struct WorkbenchRootView: View {
                     model.updateWorkingCopy()
                 }
 
-                ToolbarActionButton(
-                    title: localizer.cleanupWorkingCopy,
-                    symbol: "wrench.and.screwdriver",
-                    isEnabled: model.canCleanupWorkingCopy
-                ) {
-                    model.cleanupWorkingCopy()
-                }
+                if !compact {
+                    ToolbarActionButton(
+                        title: localizer.switchWorkingCopy,
+                        symbol: "arrow.triangle.branch",
+                        isEnabled: model.canUpdateWorkingCopy
+                    ) {
+                        model.switchWorkingCopy()
+                    }
 
-                ToolbarActionButton(
-                    title: model.isMonitoring ? localizer.stopWatcher : localizer.startWatcher,
-                    symbol: model.isMonitoring ? "eye.slash" : "eye",
-                    isEnabled: !model.rootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.isBusy
-                ) {
-                    model.toggleMonitoring()
+                    ToolbarActionButton(
+                        title: localizer.relocateWorkingCopy,
+                        symbol: "point.topleft.down.curvedto.point.bottomright.up",
+                        isEnabled: model.canUpdateWorkingCopy
+                    ) {
+                        model.relocateWorkingCopy()
+                    }
+
+                    ToolbarActionButton(
+                        title: localizer.cleanupWorkingCopy,
+                        symbol: "wrench.and.screwdriver",
+                        isEnabled: model.canCleanupWorkingCopy
+                    ) {
+                        model.cleanupWorkingCopy()
+                    }
+
+                    ToolbarActionButton(
+                        title: model.isMonitoring ? localizer.stopWatcher : localizer.startWatcher,
+                        symbol: model.isMonitoring ? "eye.slash" : "eye",
+                        isEnabled: !model.rootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !model.isBusy
+                    ) {
+                        model.toggleMonitoring()
+                    }
                 }
 
                 ToolbarActionButton(
@@ -436,6 +760,25 @@ struct WorkbenchRootView: View {
         .frame(width: 150)
     }
 
+    private var compactLanguageMenu: some View {
+        Menu {
+            ForEach(MacSVNLanguage.allCases) { language in
+                Button(language.nativeDisplayName) {
+                    model.language = language
+                }
+            }
+        } label: {
+            Label(model.language.nativeDisplayName, systemImage: "globe")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CommitPalette.textPrimary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(localizer.languageTitle)
+    }
+
     private var settingsLinkLabel: some View {
         SettingsLink {
             Label(localizer.displaySettingsTitle, systemImage: "slider.horizontal.3")
@@ -446,6 +789,18 @@ struct WorkbenchRootView: View {
                 .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+
+    private var compactSettingsLink: some View {
+        SettingsLink {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(CommitPalette.textPrimary)
+                .frame(width: 28, height: 28)
+                .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(localizer.displaySettingsTitle)
     }
 
     // MARK: - Pane Management
@@ -599,10 +954,11 @@ struct WorkbenchRootView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                         if isPaneVisible(.changeList, in: layout) {
-                            changeListPanel.frame(minHeight: 250)
+                            changeListPanel()
+                                .frame(minHeight: 250)
                         }
                         if isPaneVisible(.commitMessage, in: layout) {
-                            commitMessagePanel
+                            commitMessagePanel()
                         }
                     }
                 }
@@ -610,8 +966,12 @@ struct WorkbenchRootView: View {
 
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        if isPaneVisible(.diffPreview, in: layout) { diffPreviewPanel }
-                        if isPaneVisible(.inspector, in: layout) { inspectorSidebar }
+                        if isPaneVisible(.diffPreview, in: layout) {
+                            diffPreviewPanel()
+                        }
+                        if isPaneVisible(.inspector, in: layout) {
+                            inspectorSidebar()
+                        }
                     }
                 }
             }
@@ -619,18 +979,23 @@ struct WorkbenchRootView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     if isPaneVisible(.changeList, in: layout) {
-                        changeListPanel.frame(minHeight: 350)
+                        changeListPanel()
+                            .frame(minHeight: 350)
                     }
                     if isPaneVisible(.commitMessage, in: layout) {
-                        commitMessagePanel
+                        commitMessagePanel()
                     }
                 }
             }
         } else if showsRightColumn {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    if isPaneVisible(.diffPreview, in: layout) { diffPreviewPanel }
-                    if isPaneVisible(.inspector, in: layout) { inspectorSidebar }
+                    if isPaneVisible(.diffPreview, in: layout) {
+                        diffPreviewPanel()
+                    }
+                    if isPaneVisible(.inspector, in: layout) {
+                        inspectorSidebar()
+                    }
                 }
             }
         } else {
@@ -649,13 +1014,18 @@ struct WorkbenchRootView: View {
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     if isPaneVisible(.changeList, in: layout) {
-                        changeListPanel.frame(minHeight: 250)
+                        changeListPanel()
+                            .frame(minHeight: 250)
                     }
                     if isPaneVisible(.commitMessage, in: layout) {
-                        commitMessagePanel
+                        commitMessagePanel()
                     }
-                    if isPaneVisible(.diffPreview, in: layout) { diffPreviewPanel }
-                    if isPaneVisible(.inspector, in: layout) { inspectorSidebar }
+                    if isPaneVisible(.diffPreview, in: layout) {
+                        diffPreviewPanel()
+                    }
+                    if isPaneVisible(.inspector, in: layout) {
+                        inspectorSidebar()
+                    }
                 }
                 .padding(.trailing, 4)
             }
@@ -663,7 +1033,6 @@ struct WorkbenchRootView: View {
             collapsedWorkspacePlaceholder
         }
     }
-
 
     private var collapsedWorkspacePlaceholder: some View {
         CommitPanel(title: localizer.collapsedWorkspaceTitle) {
@@ -677,7 +1046,7 @@ struct WorkbenchRootView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(CommitPalette.textMuted)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(20)
         }
     }
@@ -686,37 +1055,38 @@ struct WorkbenchRootView: View {
 
     private func footerBar(layout: WorkbenchLayout) -> some View {
         ViewThatFits {
-            HStack(spacing: 14) {
+            HStack(spacing: 10) {
                 footerStatusRow
 
-                Spacer(minLength: 12)
+                Spacer(minLength: 8)
 
-                commitActionRow
-                    .frame(width: 430)
+                commitActionRow(compact: layout.usesMinimalCommitMode)
+                    .fixedSize(horizontal: true, vertical: false)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 footerStatusRow
 
                 ScrollView(.horizontal, showsIndicators: false) {
-                    commitActionRow
+                    commitActionRow(compact: layout.usesMinimalCommitMode)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous))
-        .background(CommitPalette.chromeBackground, in: RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(CommitPalette.chromeBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(CommitPalette.border, lineWidth: 0.5)
         )
-        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.07), radius: 6, x: 0, y: 3)
     }
 
     private var footerStatusRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 InlineCapsule(
                     text: localizer.selectedEntriesText(model.selectedCount),
                     tint: CommitPalette.accent
@@ -736,13 +1106,13 @@ struct WorkbenchRootView: View {
 
     // MARK: - Change List Panel
 
-    private var changeListPanel: some View {
+    private func changeListPanel() -> some View {
         CommitPanel(
             title: localizer.changeListPanelTitle,
             headerTrailing: {
                 HStack(spacing: 10) {
                     Text(localizer.selectedEntriesText(model.selectedCount))
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(CommitPalette.textSecondary)
 
                     panelCollapseButton(for: .changeList)
@@ -750,50 +1120,112 @@ struct WorkbenchRootView: View {
             }
         ) {
             if model.entries.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(localizer.noEntriesLoadedTitle)
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(CommitPalette.textPrimary)
 
                     Text(localizer.noEntriesLoadedDescription)
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(CommitPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(14)
             } else {
-                List(model.treeNodes, children: \.children) { node in
-                    ChangeOutlineRow(
-                        node: node,
-                        localizer: localizer,
-                        selectedPaths: model.selectedPaths,
-                        onSetNodeSelection: { targetNode, isSelected in
-                            model.setSelection(
-                                for: model.actionablePaths(for: targetNode),
-                                isSelected: isSelected
-                            )
-                            isCommitMessageFocused = true
-                        },
-                        onToggleEntry: { entryPath in
-                            model.toggleSelection(for: entryPath)
-                            isCommitMessageFocused = true
-                        }
-                    )
-                    .contextMenu {
-                        changeListContextMenu(for: node)
+                changeTreeList
+            }
+        }
+    }
+
+    private var changeTreeList: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                changeTreeRows(model.treeNodes, depth: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+        }
+        .background(CommitPalette.listBackground)
+        .onAppear {
+            expandInitialChangeNodesIfNeeded()
+        }
+        .onChange(of: model.treeNodes.map(\.id)) { _, _ in
+            expandedChangeNodeIDs = expandedChangeNodeIDs.intersection(allExpandableChangeNodeIDs(in: model.treeNodes))
+            expandInitialChangeNodesIfNeeded()
+        }
+    }
+
+    private func changeTreeRows(_ nodes: [ChangeTreeNode], depth: Int) -> AnyView {
+        AnyView(
+            ForEach(nodes) { node in
+                let isSelected = node.selectionState(in: model.selectedPaths) != .none
+                let isExpanded = expandedChangeNodeIDs.contains(node.id)
+
+                ChangeOutlineRow(
+                    node: node,
+                    localizer: localizer,
+                    selectedPaths: model.selectedPaths,
+                    depth: depth,
+                    isExpanded: isExpanded,
+                    onToggleExpansion: toggleChangeNodeExpansion,
+                    onSetNodeSelection: { targetNode, isSelected in
+                        model.setSelection(
+                            for: model.actionablePaths(for: targetNode),
+                            isSelected: isSelected
+                        )
+                        isCommitMessageFocused = true
+                    },
+                    onToggleEntry: { entryPath in
+                        model.toggleSelection(for: entryPath)
+                        isCommitMessageFocused = true
                     }
-                    .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                    .listRowBackground(
-                        node.selectionState(in: model.selectedPaths) == .none
-                            ? CommitPalette.listBackground
-                            : CommitPalette.rowSelection
-                    )
+                )
+                .background(
+                    isSelected
+                        ? CommitPalette.rowSelection
+                        : CommitPalette.rowBackground,
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+                .contextMenu {
+                    changeListContextMenu(for: node)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .background(CommitPalette.listBackground)
-                .environment(\.defaultMinListRowHeight, 34)
+
+                if isExpanded, let children = node.children {
+                    changeTreeRows(children, depth: depth + 1)
+                }
+            }
+        )
+    }
+
+    private func toggleChangeNodeExpansion(_ node: ChangeTreeNode) {
+        guard node.hasChildren else {
+            return
+        }
+
+        withAnimation(.snappy(duration: 0.18, extraBounce: 0.02)) {
+            if expandedChangeNodeIDs.contains(node.id) {
+                expandedChangeNodeIDs.remove(node.id)
+            } else {
+                expandedChangeNodeIDs.insert(node.id)
+            }
+        }
+    }
+
+    private func expandInitialChangeNodesIfNeeded() {
+        guard expandedChangeNodeIDs.isEmpty else {
+            return
+        }
+        expandedChangeNodeIDs = Set(model.treeNodes.filter(\.hasChildren).map(\.id))
+    }
+
+    private func allExpandableChangeNodeIDs(in nodes: [ChangeTreeNode]) -> Set<String> {
+        nodes.reduce(into: Set<String>()) { result, node in
+            if node.hasChildren {
+                result.insert(node.id)
+            }
+            if let children = node.children {
+                result.formUnion(allExpandableChangeNodeIDs(in: children))
             }
         }
     }
@@ -931,30 +1363,30 @@ struct WorkbenchRootView: View {
 
     // MARK: - Commit Message Panel
 
-    private var commitMessagePanel: some View {
+    private func commitMessagePanel() -> some View {
         CommitPanel(
             title: localizer.commitMessagePanelTitle,
             headerTrailing: {
                 HStack(spacing: 10) {
                     Text(localizer.selectedEntriesText(model.selectedCount))
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .foregroundStyle(CommitPalette.textMuted)
 
                     panelCollapseButton(for: .commitMessage)
                 }
             }
         ) {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(model.statusMessage)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(CommitPalette.textPrimary)
 
                     if let lastRefreshDate = model.lastRefreshDate {
                         Text(localizer.lastRefreshText(
                             lastRefreshDate.formatted(date: .omitted, time: .standard)
                         ))
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(CommitPalette.textSecondary)
                     }
 
@@ -972,13 +1404,13 @@ struct WorkbenchRootView: View {
                 )
 
                 Text(localizer.commitFooterHint(selectedCount: model.selectedCount))
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(CommitPalette.textMuted)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 18)
-            .padding(.top, 18)
-            .padding(.bottom, 18)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
         }
     }
 
@@ -1041,8 +1473,10 @@ struct WorkbenchRootView: View {
 
                     Spacer()
 
-                    commitActionRow
-                        .frame(width: 340)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        commitActionRow(compact: true)
+                    }
+                    .frame(width: 420)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1093,8 +1527,8 @@ struct WorkbenchRootView: View {
 
     // MARK: - Commit Action Row
 
-    private var commitActionRow: some View {
-        HStack(spacing: 10) {
+    private func commitActionRow(compact: Bool = false) -> some View {
+        HStack(spacing: 8) {
             Button(localizer.clearSelection) {
                 model.clearSelection()
             }
@@ -1109,6 +1543,22 @@ struct WorkbenchRootView: View {
             .disabled(!model.canAddSelected)
             .modifier(FooterActionButtonModifier(kind: .secondary))
 
+            if !compact {
+                Button(localizer.shelveSelected) {
+                    model.shelveSelected()
+                }
+                .buttonStyle(.plain)
+                .disabled(!model.canShelveSelected)
+                .modifier(FooterActionButtonModifier(kind: .secondary))
+
+                Button(localizer.unshelveSelected) {
+                    model.unshelveNamedShelf()
+                }
+                .buttonStyle(.plain)
+                .disabled(!model.canUnshelve)
+                .modifier(FooterActionButtonModifier(kind: .secondary))
+            }
+
             Button(localizer.commitSelected) {
                 model.commitSelected()
             }
@@ -1121,7 +1571,7 @@ struct WorkbenchRootView: View {
 
     // MARK: - Diff Preview Panel
 
-    private var diffPreviewPanel: some View {
+    private func diffPreviewPanel() -> some View {
         CommitPanel(
             title: localizer.diffPreviewTitle,
             headerTrailing: {
@@ -1151,7 +1601,7 @@ struct WorkbenchRootView: View {
                         .foregroundStyle(CommitPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(20)
             }
         }
@@ -1237,7 +1687,7 @@ struct WorkbenchRootView: View {
         }
 
         diffPreviewContentBody
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 180)
             .clipped()
             .padding(.horizontal, 18)
             .padding(.bottom, 18)
@@ -1301,7 +1751,7 @@ struct WorkbenchRootView: View {
         }
 
         diffPreviewContentBody
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 180)
             .clipped()
             .padding(.horizontal, 18)
             .padding(.bottom, 18)
@@ -1403,7 +1853,7 @@ struct WorkbenchRootView: View {
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(CommitPalette.textPrimary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(16)
                 .background(
                     CommitPalette.groupBackground,
@@ -1421,7 +1871,7 @@ struct WorkbenchRootView: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(16)
                 .background(
                     CommitPalette.groupBackground,
@@ -1440,7 +1890,7 @@ struct WorkbenchRootView: View {
                         .foregroundStyle(CommitPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(16)
                 .background(
                     CommitPalette.groupBackground,
@@ -1523,7 +1973,7 @@ struct WorkbenchRootView: View {
 
     // MARK: - Inspector Sidebar
 
-    private var inspectorSidebar: some View {
+    private func inspectorSidebar() -> some View {
         CommitPanel(
             title: localizer.subversionOptionsTitle,
             headerTrailing: {

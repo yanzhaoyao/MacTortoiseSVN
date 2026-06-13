@@ -1,3 +1,4 @@
+import SVNCore
 import SwiftUI
 
 @main
@@ -38,10 +39,37 @@ enum WorkbenchWindowPreset: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum WorkbenchBackendMode: String, Codable, CaseIterable, Identifiable {
+    case bundledRust
+    case systemCommandLine
+    case xcodeBundled
+
+    var id: String {
+        rawValue
+    }
+
+    var svnBackendKind: SVNBackendKind {
+        switch self {
+        case .bundledRust:
+            return .commandLine
+        case .systemCommandLine:
+            return .commandLine
+        case .xcodeBundled:
+            return .xcodeBundled
+        }
+    }
+}
+
 struct WorkbenchPresentationPreferences: Codable, Equatable {
     var defaultWindowPreset: WorkbenchWindowPreset = .compact
     var hideDiffPreviewInCompactWindow = true
     var showSidebar = true
+    var backendMode: WorkbenchBackendMode = .bundledRust
+    var preserveModificationTimes = true
+    var maxConcurrentOperations = 2
+    var badgeEntryLimit = 4096
+    var maxIncrementalDirtyPaths = 256
+    var selectedExternalDiffToolID = ""
 
     var showChangeList = true
     var showCommitMessage = true

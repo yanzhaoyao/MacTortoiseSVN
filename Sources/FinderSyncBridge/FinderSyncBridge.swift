@@ -36,19 +36,20 @@ public struct MacSVNLanguageStore: Sendable {
     }
 
     public func loadLanguage() -> MacSVNLanguage {
-        if
-            let data = try? Data(contentsOf: storageURL),
-            let rawValue = try? JSONDecoder().decode(String.self, from: data),
-            let language = MacSVNLanguage(rawValue: rawValue)
-        {
-            return language
-        }
-
         let sharedDefaults = UserDefaults(suiteName: Self.appGroupSuiteName)
         let rawValue = sharedDefaults?.string(forKey: Self.userDefaultsKey)
             ?? UserDefaults.standard.string(forKey: Self.userDefaultsKey)
 
         if let rawValue, let language = MacSVNLanguage(rawValue: rawValue) {
+            return language
+        }
+
+        if
+            let storageURL,
+            let data = try? Data(contentsOf: storageURL),
+            let storedRawValue = try? JSONDecoder().decode(String.self, from: data),
+            let language = MacSVNLanguage(rawValue: storedRawValue)
+        {
             return language
         }
 
@@ -63,20 +64,26 @@ public struct MacSVNLanguageStore: Sendable {
         }
 
         do {
+            guard let directoryURL = macSVNSharedAppSupportDirectory() else {
+                return
+            }
             try FileManager.default.createDirectory(
-                at: macSVNSharedAppSupportDirectory(),
+                at: directoryURL,
                 withIntermediateDirectories: true,
                 attributes: nil
             )
             let data = try JSONEncoder().encode(language.rawValue)
+            guard let storageURL else {
+                return
+            }
             try data.write(to: storageURL, options: .atomic)
         } catch {
             return
         }
     }
 
-    private var storageURL: URL {
-        macSVNSharedAppSupportDirectory().appending(path: "language.json")
+    private var storageURL: URL? {
+        macSVNSharedAppSupportDirectory()?.appending(path: "language.json")
     }
 }
 
@@ -88,36 +95,54 @@ public struct MacSVNMonitoredRootsStore: Sendable {
         "com.morningstar.MacTortoiseSVN.monitoredRootsRequest"
     )
     public static let distributedNotificationRootsKey = "roots"
+    public static let userDefaultsKey = "MacSVNMonitoredRoots"
 
     public init() {
     }
 
     public func loadRoots() -> [String] {
-        guard
-            let data = try? Data(contentsOf: storageURL),
-            let paths = try? JSONDecoder().decode([String].self, from: data)
-        else {
-            return []
+        if
+            let sharedDefaults = UserDefaults(suiteName: MacSVNLanguageStore.appGroupSuiteName),
+            let paths = sharedDefaults.array(forKey: Self.userDefaultsKey) as? [String],
+            !paths.isEmpty
+        {
+            return Array(Set(paths.map(standardizedPath))).sorted()
         }
 
-        return Array(Set(paths.map(standardizedPath))).sorted()
+        for storageURL in storageURLs {
+            guard
+                let data = try? Data(contentsOf: storageURL),
+                let paths = try? JSONDecoder().decode([String].self, from: data),
+                !paths.isEmpty
+            else {
+                continue
+            }
+
+            return Array(Set(paths.map(standardizedPath))).sorted()
+        }
+
+        return []
     }
 
     public func saveRoots(_ roots: [String]) {
         let normalizedRoots = Array(Set(roots.map(standardizedPath))).sorted()
-        let fileManager = FileManager.default
-        let directoryURL = storageURL.deletingLastPathComponent()
+        let sharedDefaults = UserDefaults(suiteName: MacSVNLanguageStore.appGroupSuiteName)
+        sharedDefaults?.set(normalizedRoots, forKey: Self.userDefaultsKey)
+        let data = try? JSONEncoder().encode(normalizedRoots)
 
-        do {
-            try fileManager.createDirectory(
-                at: directoryURL,
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
-            let data = try JSONEncoder().encode(normalizedRoots)
-            try data.write(to: storageURL, options: .atomic)
-        } catch {
-            return
+        if let data {
+            for storageURL in storageURLs {
+                do {
+                    try FileManager.default.createDirectory(
+                        at: storageURL.deletingLastPathComponent(),
+                        withIntermediateDirectories: true,
+                        attributes: nil
+                    )
+                    try data.write(to: storageURL, options: .atomic)
+                } catch {
+                    continue
+                }
+            }
         }
 
         DistributedNotificationCenter.default().post(
@@ -134,9 +159,14 @@ public struct MacSVNMonitoredRootsStore: Sendable {
             .max(by: { $0.count < $1.count })
     }
 
-    private var storageURL: URL {
-        macSVNSharedAppSupportDirectory()
+    private var storageURL: URL? {
+        macSVNSharedAppSupportDirectory()?
             .appending(path: "monitored-roots.json")
+    }
+
+    private var storageURLs: [URL] {
+        macSVNSharedAppSupportDirectories()
+            .map { $0.appending(path: "monitored-roots.json") }
     }
 }
 
@@ -166,12 +196,22 @@ public struct MacSVNWorkbenchCommandStore: Sendable {
     public static let distributedNotificationName = Notification.Name(
         "com.morningstar.MacTortoiseSVN.workbenchCommandDidChange"
     )
+    public static let userDefaultsKey = "MacSVNWorkbenchCommand"
 
     public init() {
     }
 
     public func loadCommand() -> MacSVNWorkbenchCommand? {
+        if
+            let sharedDefaults = UserDefaults(suiteName: MacSVNLanguageStore.appGroupSuiteName),
+            let data = sharedDefaults.data(forKey: Self.userDefaultsKey),
+            let command = try? JSONDecoder().decode(MacSVNWorkbenchCommand.self, from: data)
+        {
+            return command
+        }
+
         guard
+            let storageURL,
             let data = try? Data(contentsOf: storageURL),
             let command = try? JSONDecoder().decode(MacSVNWorkbenchCommand.self, from: data)
         else {
@@ -182,6 +222,16 @@ public struct MacSVNWorkbenchCommandStore: Sendable {
     }
 
     public func saveCommand(_ command: MacSVNWorkbenchCommand) {
+        if
+            let sharedDefaults = UserDefaults(suiteName: MacSVNLanguageStore.appGroupSuiteName),
+            let data = try? JSONEncoder().encode(command)
+        {
+            sharedDefaults.set(data, forKey: Self.userDefaultsKey)
+        }
+
+        guard let storageURL else {
+            return
+        }
         let fileManager = FileManager.default
         let directoryURL = storageURL.deletingLastPathComponent()
 
@@ -204,11 +254,16 @@ public struct MacSVNWorkbenchCommandStore: Sendable {
     }
 
     public func clearCommand() {
-        try? FileManager.default.removeItem(at: storageURL)
+        if let sharedDefaults = UserDefaults(suiteName: MacSVNLanguageStore.appGroupSuiteName) {
+            sharedDefaults.removeObject(forKey: Self.userDefaultsKey)
+        }
+        if let storageURL {
+            try? FileManager.default.removeItem(at: storageURL)
+        }
     }
 
-    private var storageURL: URL {
-        macSVNSharedAppSupportDirectory()
+    private var storageURL: URL? {
+        macSVNSharedAppSupportDirectory()?
             .appending(path: "workbench-command.json")
     }
 }
@@ -304,8 +359,8 @@ public struct MacSVNLocalizer: Sendable {
     }
     public func finderDiffReadyText(selectedCount: Int) -> String {
         choose(
-            english: "Loaded \(selectedCount) selected path(s) from Finder. Diff integration is the next step.",
-            chinese: "已从访达载入 \(selectedCount) 个所选路径，比较功能链路是下一步。"
+            english: "Loaded \(selectedCount) selected path(s) from Finder. Open the diff panel or launch the configured external diff tool.",
+            chinese: "已从访达载入 \(selectedCount) 个所选路径。可在差异面板查看，或启动已配置的外部比较工具。"
         )
     }
     public var invalidWorkingCopyRoot: String {
@@ -414,6 +469,8 @@ public struct MacSVNLocalizer: Sendable {
 
     public func title(for command: FinderMenuCommand) -> String {
         switch command {
+        case .updateWorkingCopy:
+            return choose(english: "Update Working Copy", chinese: "拉取")
         case .commitSelected:
             return choose(english: "Commit Selected...", chinese: "提交所选...")
         case .diffSelected:
@@ -450,17 +507,56 @@ public enum FinderBadgeKind: String, Sendable, Hashable, Codable, CaseIterable {
     public var badgeLabel: String {
         switch self {
         case .modified:
+            return "Modified"
+        case .added:
+            return "Added"
+        case .deleted:
+            return "Deleted"
+        case .conflicted:
+            return "Conflicted"
+        case .unversioned:
+            return "Unversioned"
+        case .descendantDirty:
+            return "Contains changes"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .modified:
             return "M"
         case .added:
-            return "A"
+            return "+"
         case .deleted:
-            return "D"
+            return "-"
         case .conflicted:
             return "!"
         case .unversioned:
-            return "U"
+            return "?"
         case .descendantDirty:
             return "..."
+        }
+    }
+
+    public var symbolFontSize: Double {
+        switch self {
+        case .descendantDirty:
+            return 18
+        case .modified, .added, .deleted, .conflicted, .unversioned:
+            return 28
+        }
+    }
+
+    public var symbolBaselineOffset: Double {
+        switch self {
+        case .added:
+            return 1
+        case .deleted:
+            return -1
+        case .descendantDirty:
+            return 2
+        case .modified, .conflicted, .unversioned:
+            return 0
         }
     }
 }
@@ -506,6 +602,7 @@ public struct FinderBadgeResponse: Sendable, Hashable, Codable {
 }
 
 public enum FinderMenuCommand: String, Sendable, Hashable, Codable, CaseIterable {
+    case updateWorkingCopy
     case commitSelected
     case diffSelected
     case refreshNow
@@ -567,6 +664,10 @@ public struct FinderBadgeResolver: Sendable {
                 return FinderBadgeAssignment(path: standardized, kind: kind)
             }
 
+            if standardized == standardizedPath(snapshot.rootPath), !standardizedEntries.isEmpty {
+                return FinderBadgeAssignment(path: standardized, kind: .descendantDirty)
+            }
+
             guard hasDirtyDescendant(for: standardized, entries: standardizedEntries) else {
                 return nil
             }
@@ -625,6 +726,10 @@ public struct FinderContextMenuBuilder: Sendable {
 
         return [
             FinderMenuActionDescriptor(
+                command: .updateWorkingCopy,
+                title: localizer.title(for: .updateWorkingCopy)
+            ),
+            FinderMenuActionDescriptor(
                 command: .commitSelected,
                 title: localizer.title(for: .commitSelected),
                 isEnabled: canCommit
@@ -664,33 +769,68 @@ public struct FinderContextMenuBuilder: Sendable {
     }
 }
 
-private func standardizedPath(_ path: String) -> String {
+func standardizedPath(_ path: String) -> String {
     URL(fileURLWithPath: path).standardizedFileURL.path
 }
 
-private func macSVNSharedAppSupportDirectory() -> URL {
+func macSVNSharedAppSupportDirectory() -> URL? {
+    macSVNSharedAppSupportDirectories().first
+}
+
+func macSVNSharedAppSupportDirectories() -> [URL] {
     let fileManager = FileManager.default
-    let baseDirectory: URL
+    var baseDirectories: [URL] = []
+
     if let appGroupURL = fileManager.containerURL(
         forSecurityApplicationGroupIdentifier: MacSVNLanguageStore.appGroupSuiteName
     ) {
-        baseDirectory = appGroupURL
+        baseDirectories.append(appGroupURL)
+    } else if isRunningInsideExtension() {
+        return []
     } else {
-        baseDirectory = fileManager.homeDirectoryForCurrentUser
-            .appending(path: "Library")
-            .appending(path: "Application Support")
+        baseDirectories.append(userApplicationSupportDirectory(fileManager: fileManager))
     }
 
-    let preferredDirectory = baseDirectory.appending(path: "MacTortoiseSVN")
-    let legacyDirectory = baseDirectory.appending(path: "MacSVNWorkbench")
-
-    if fileManager.fileExists(atPath: preferredDirectory.path) {
-        return preferredDirectory
+    if !isRunningInsideExtension() {
+        let userSupportDirectory = userApplicationSupportDirectory(fileManager: fileManager)
+        if !baseDirectories.contains(userSupportDirectory) {
+            baseDirectories.append(userSupportDirectory)
+        }
     }
 
-    if fileManager.fileExists(atPath: legacyDirectory.path) {
-        return legacyDirectory
+    var existingDirectories: [URL] = []
+    var fallbackDirectories: [URL] = []
+
+    for baseDirectory in baseDirectories {
+        let preferredDirectory = baseDirectory.appending(path: "MacTortoiseSVN")
+        let legacyDirectory = baseDirectory.appending(path: "MacSVNWorkbench")
+
+        for directory in [preferredDirectory, legacyDirectory] {
+            if fileManager.fileExists(atPath: directory.path) {
+                existingDirectories.append(directory)
+            } else {
+                fallbackDirectories.append(directory)
+            }
+        }
     }
 
-    return preferredDirectory
+    var seenPaths = Set<String>()
+    return (existingDirectories + fallbackDirectories).filter { directory in
+        seenPaths.insert(directory.path).inserted
+    }
+}
+
+public func macSVNDiagnosticLogURL(fileName: String) -> URL? {
+    macSVNSharedAppSupportDirectory()?.appending(path: fileName)
+}
+
+private func userApplicationSupportDirectory(fileManager: FileManager = .default) -> URL {
+    fileManager.homeDirectoryForCurrentUser
+        .appending(path: "Library")
+        .appending(path: "Application Support")
+}
+
+private func isRunningInsideExtension(bundle: Bundle = .main) -> Bool {
+    bundle.bundleURL.pathExtension == "appex"
+        || bundle.object(forInfoDictionaryKey: "NSExtension") != nil
 }

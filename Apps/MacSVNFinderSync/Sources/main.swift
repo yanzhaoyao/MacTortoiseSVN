@@ -1,5 +1,3 @@
-import Foundation
-
 @_silgen_name("NSExtensionMain")
 private func NSExtensionMain(
     _ argc: Int32,

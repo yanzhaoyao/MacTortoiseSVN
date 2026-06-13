@@ -44,7 +44,7 @@ public actor SubversionDiffInspector {
     ) async throws -> SVNDiffPreview {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["diff", path],
+            arguments: ["diff", "--", path],
             workingDirectory: workingCopyRoot ?? fallbackWorkingDirectory(for: path)
         )
         let result = try await runner.run(request)
@@ -67,7 +67,7 @@ public actor SubversionDiffInspector {
     ) async throws -> SVNDiffPreview {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["diff", "-c", String(revision), rootPath],
+            arguments: ["diff", "-c", String(revision), "--", rootPath],
             workingDirectory: rootPath
         )
         let result = try await runner.run(request)

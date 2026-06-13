@@ -30,7 +30,7 @@ final class SubversionDiffInspectorTests: XCTestCase {
         XCTAssertEqual(preview.rawText, diff)
         XCTAssertFalse(preview.isEmpty)
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].arguments, ["diff", "/repo/project/README.md"])
+        XCTAssertEqual(requests[0].arguments, ["diff", "--", "/repo/project/README.md"])
         XCTAssertEqual(requests[0].workingDirectory, "/repo/project")
     }
 
@@ -76,7 +76,7 @@ final class SubversionDiffInspectorTests: XCTestCase {
             XCTAssertEqual(
                 error,
                 .commandFailed(
-                    arguments: ["diff", "/repo/project/README.md"],
+                    arguments: ["diff", "--", "/repo/project/README.md"],
                     exitCode: 1,
                     stderr: "svn: E155010: The node was not found."
                 )
@@ -111,7 +111,7 @@ final class SubversionDiffInspectorTests: XCTestCase {
         XCTAssertEqual(preview.targetPath, "r13")
         XCTAssertEqual(preview.rawText, diff)
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].arguments, ["diff", "-c", "13", "/repo/project"])
+        XCTAssertEqual(requests[0].arguments, ["diff", "-c", "13", "--", "/repo/project"])
         XCTAssertEqual(requests[0].workingDirectory, "/repo/project")
     }
 }

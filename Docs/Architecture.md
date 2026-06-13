@@ -72,6 +72,7 @@ Current scaffold status:
 - `StatusServiceHost` now exists in the Swift package as the first service-layer host
 - `SQLiteStatusCacheStore` now persists badge snapshots and dirty-path state
 - `FSEventsWorkingCopyWatcher` now feeds real file-system events into that host
+- this is still an in-package host, not the deployed app/extension-facing XPC data path
 - the next step is promoting that host into the actual app/extension-facing background process boundary
 
 ## Shared modules
@@ -127,9 +128,62 @@ Shared integration contracts for:
 5. Finder Sync renders the cached result immediately.
 6. `MacSVNApp` uses the same status and command pipeline for commit, add, diff, shelve, and update workflows.
 
-## Finder-triggered workflow sequence
+## Current FinderSync data path
 
-The important boundary is that Finder starts the workflow, but does not host the heavy workflow logic.
+The current FinderSync extension does not fetch badge state by directly connecting to `MacSVNStatusService` or `StatusService.xpc`.
+
+Today, FinderSync reads badge snapshots from the App Group SQLite cache and relies on distributed notifications only as refresh signals. Notification payloads are not trusted as a source of monitored roots; FinderSync reloads roots from App Group storage after a signal arrives. The main app/service-side code is responsible for writing snapshots and dirty-path updates.
+
+## Current sequence: SQLite shared cache
+
+```mermaid
+sequenceDiagram
+    participant User as "User"
+    participant Finder as "Finder"
+    participant Ext as "MacSVNFinderSync"
+    participant App as "MacSVNApp"
+    participant Store as "App Group Storage"
+    participant Cache as "SQLite Status Cache"
+    participant SVN as "SVNCore"
+    participant Tool as "External Diff Tool"
+
+    App->>Store: Save monitored roots
+    App->>SVN: Refresh working copy status
+    SVN-->>App: Working copy items
+    App->>Cache: Write badge snapshot and dirty-path state
+    App-->>Ext: Distributed notification refresh signal
+
+    User->>Finder: Select files or folders
+    Finder->>Ext: Request badges and menu items
+    Ext->>Store: Reload monitored roots
+    Ext->>Cache: Read cached badge snapshot read-only
+    Cache-->>Ext: Cached badge state if available
+    Ext-->>Finder: Render badges and menu
+
+    User->>Finder: Click "Commit…", "Add…", or "Diff"
+    Finder->>Ext: Invoke selected command
+    Ext->>Store: Save command for host app
+    Ext->>App: Launch app with selected paths and command
+    Note over Ext,App: Finder extension exits the hot path here
+
+    App->>Store: Load Finder command
+    App->>SVN: Run selected workflow command
+    SVN-->>App: Result or error
+
+    alt Diff workflow
+        App->>Tool: Launch BBEdit, Beyond Compare, or native diff
+        Tool-->>App: Exit status or callback
+    end
+
+    App->>SVN: Refresh changed statuses asynchronously
+    SVN-->>App: Working copy items
+    App->>Cache: Publish updated badge snapshot
+    App-->>Ext: Distributed notification refresh signal
+```
+
+## Target sequence: XPC status service
+
+The target process architecture promotes the current service host into an authenticated app/extension-facing boundary. In that model, FinderSync can ask the service for small cached payloads, while the service owns refresh scheduling and cache writes.
 
 ```mermaid
 sequenceDiagram
@@ -188,7 +242,7 @@ sequenceDiagram
     Cache-->>Service: New snapshot stored
 ```
 
-### What this sequence protects us from
+### What these sequences protect us from
 
 - Finder never owns the commit tree, add preview, diff setup, or long-running SVN calls.
 - The extension only handles fast badge reads and command forwarding.

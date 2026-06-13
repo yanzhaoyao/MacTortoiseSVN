@@ -1,7 +1,9 @@
 import Cocoa
+import CoreTypes
 import FinderSync
 import FinderSyncBridge
 import OSLog
+import StatusService
 import StatusServiceXPC
 
 private final class FinderMenuActionsBox: @unchecked Sendable {
@@ -21,6 +23,57 @@ private struct FinderSelectionContext {
     var rootPath: String?
 }
 
+private actor FinderStatusSnapshotCache {
+    private let resolver = FinderBadgeResolver()
+    private var stores: [String: SQLiteStatusCacheStore] = [:]
+    private var snapshots: [String: (snapshot: BadgeSnapshot?, loadedAt: Date)] = [:]
+    // Finder issues one requestBadgeIdentifier call per visible item, so a short
+    // TTL avoids re-reading the SQLite cache for every file in a directory.
+    private let snapshotTTL: TimeInterval = 2
+
+    func snapshot(rootPath: String) async -> BadgeSnapshot? {
+        if
+            let cached = snapshots[rootPath],
+            Date().timeIntervalSince(cached.loadedAt) < snapshotTTL
+        {
+            return cached.snapshot
+        }
+
+        let snapshot = await loadSnapshot(rootPath: rootPath)
+        snapshots[rootPath] = (snapshot, Date())
+        return snapshot
+    }
+
+    func assignments(rootPath: String, visiblePaths: [String]) async -> [FinderBadgeAssignment] {
+        guard let snapshot = await snapshot(rootPath: rootPath) else {
+            return []
+        }
+        return resolver.assignments(for: visiblePaths, snapshot: snapshot)
+    }
+
+    func invalidate() {
+        snapshots.removeAll()
+    }
+
+    private func loadSnapshot(rootPath: String) async -> BadgeSnapshot? {
+        let store: SQLiteStatusCacheStore
+        if let existing = stores[rootPath] {
+            store = existing
+        } else {
+            let databaseURL = StatusServiceConfiguration
+                .development(repositoryRoot: rootPath)
+                .databaseURL
+            guard let created = try? SQLiteStatusCacheStore(databaseURL: databaseURL, readOnly: true) else {
+                return nil
+            }
+            stores[rootPath] = created
+            store = created
+        }
+
+        return (try? await store.loadSnapshot(for: rootPath)) ?? nil
+    }
+}
+
 @objc(FinderSyncExtension)
 public final class FinderSyncExtension: FIFinderSync {
     private let logger = Logger(
@@ -28,29 +81,28 @@ public final class FinderSyncExtension: FIFinderSync {
         category: "extension"
     )
     private let finderController = FIFinderSyncController.default()
-    private let statusClient = StatusServiceXPCClient()
     private let monitoredRootsStore = MacSVNMonitoredRootsStore()
     private let workbenchCommandStore = MacSVNWorkbenchCommandStore()
+    private let statusSnapshotCache = FinderStatusSnapshotCache()
+    private let menuBuilder = FinderContextMenuBuilder()
     private var cachedMonitoredRoots: [String] = []
     private var lastMenuSelectionContext: FinderSelectionContext?
 
     override init() {
         super.init()
-        touchMarker(named: "event-init")
-        diagnosticLog("init")
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(handleMonitoredRootsDidChange(_:)),
             name: MacSVNMonitoredRootsStore.distributedNotificationName,
             object: nil
         )
+        registerKnownBadges()
+        reloadMonitoredRoots()
         DistributedNotificationCenter.default().post(
             name: MacSVNMonitoredRootsStore.distributedRequestNotificationName,
             object: nil
         )
-        touchMarker(named: "event-roots-requested")
-        registerKnownBadges()
-        reloadMonitoredRoots()
+        diagnosticLog("init loaded cached monitored roots and requested refresh")
     }
 
     deinit {
@@ -58,37 +110,33 @@ public final class FinderSyncExtension: FIFinderSync {
     }
 
     public override func beginObservingDirectory(at url: URL) {
-        touchMarker(named: "event-beginObserving")
         diagnosticLog("beginObservingDirectory path=\(url.path)")
     }
 
     public override func endObservingDirectory(at url: URL) {
-        touchMarker(named: "event-endObserving")
         diagnosticLog("endObservingDirectory path=\(url.path)")
     }
 
     public override func requestBadgeIdentifier(for url: URL) {
-        touchMarker(named: "event-badge")
         diagnosticLog("requestBadgeIdentifier path=\(url.path)")
         let path = url.standardizedFileURL.path
         guard let rootPath = rootPathForURL(url) else {
             diagnosticLog("requestBadgeIdentifier skipped: no rootPath")
+            finderController.setBadgeIdentifier("", for: url)
             return
         }
 
-        let statusClient = self.statusClient
-        Task { [statusClient] in
-            let assignments = try? await statusClient.badgeAssignments(
+        let statusSnapshotCache = self.statusSnapshotCache
+        Task { [statusSnapshotCache] in
+            let assignments = await statusSnapshotCache.assignments(
                 rootPath: rootPath,
                 visiblePaths: [path]
             )
-            guard let assignment = assignments?.first else {
-                return
-            }
+            let badgeIdentifier = assignments.first?.badgeIdentifier ?? ""
 
             await MainActor.run {
                 FIFinderSyncController.default().setBadgeIdentifier(
-                    assignment.badgeIdentifier,
+                    badgeIdentifier,
                     for: url
                 )
             }
@@ -96,7 +144,6 @@ public final class FinderSyncExtension: FIFinderSync {
     }
 
     public override func menu(for menuKind: FIMenuKind) -> NSMenu? {
-        touchMarker(named: "event-menu")
         let language = MacSVNLanguageStore().loadLanguage()
         let localizer = MacSVNLocalizer(language: language)
         let menu = NSMenu(title: localizer.finderMenuTitle)
@@ -144,6 +191,11 @@ public final class FinderSyncExtension: FIFinderSync {
     }
 
     @objc
+    private func handleUpdateWorkingCopyMenuItem(_ sender: NSMenuItem) {
+        handleMenuCommand(.updateWorkingCopy, sender: sender)
+    }
+
+    @objc
     private func handleCommitSelectedMenuItem(_ sender: NSMenuItem) {
         handleMenuCommand(.commitSelected, sender: sender)
     }
@@ -179,11 +231,20 @@ public final class FinderSyncExtension: FIFinderSync {
             guard let rootPath else {
                 return
             }
-            let statusClient = self.statusClient
-            Task { [statusClient] in
-                _ = try? await statusClient.refresh(rootPath: rootPath, forceFullRefresh: true)
+            // The extension cannot reach the app-embedded XPC service; saving the
+            // command posts a distributed notification the workbench reacts to.
+            workbenchCommandStore.saveCommand(
+                MacSVNWorkbenchCommand(
+                    command: .refreshNow,
+                    rootPath: rootPath,
+                    selectedPaths: selectedPaths
+                )
+            )
+            let statusSnapshotCache = self.statusSnapshotCache
+            Task { [statusSnapshotCache] in
+                await statusSnapshotCache.invalidate()
             }
-        case .openInWorkbench, .commitSelected, .diffSelected:
+        case .openInWorkbench, .updateWorkingCopy, .commitSelected, .diffSelected:
             openHostApp(command: command, rootPath: rootPath, selectedPaths: selectedPaths)
         }
     }
@@ -204,26 +265,68 @@ public final class FinderSyncExtension: FIFinderSync {
                 imageName = NSImage.Name("NSAddTemplate")
             }
 
-            if let image = NSImage(named: imageName) {
-                finderController.setBadgeImage(
-                    image,
-                    label: badge.badgeLabel,
-                    forBadgeIdentifier: badge.badgeIdentifier
-                )
-            }
+            finderController.setBadgeImage(
+                NSImage(named: imageName) ?? finderStatusBadgeImage(for: badge),
+                label: badge.badgeLabel,
+                forBadgeIdentifier: badge.badgeIdentifier
+            )
         }
+    }
+
+    private func finderStatusBadgeImage(for badge: FinderBadgeKind) -> NSImage {
+        let size = NSSize(width: 64, height: 64)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        NSGraphicsContext.current?.imageInterpolation = .high
+        NSColor.clear.setFill()
+        NSRect(origin: .zero, size: size).fill()
+
+        let badgeRect = NSRect(x: 6, y: 6, width: 52, height: 52)
+        let shadow = NSShadow()
+        shadow.shadowBlurRadius = 7
+        shadow.shadowOffset = NSSize(width: 0, height: -2)
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
+
+        NSGraphicsContext.saveGraphicsState()
+        shadow.set()
+        let basePath = NSBezierPath(ovalIn: badgeRect)
+        badge.fillColor.setFill()
+        basePath.fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        NSColor.white.withAlphaComponent(0.94).setStroke()
+        basePath.lineWidth = 5
+        basePath.stroke()
+
+        drawSymbol(for: badge, in: badgeRect.insetBy(dx: 12, dy: 12))
+
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+
+    private func drawSymbol(for badge: FinderBadgeKind, in rect: NSRect) {
+        let symbol = badge.symbol as NSString
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: CGFloat(badge.symbolFontSize), weight: .black),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        let symbolSize = symbol.size(withAttributes: attributes)
+        let textRect = NSRect(
+            x: rect.midX - symbolSize.width / 2,
+            y: rect.midY - symbolSize.height / 2 - CGFloat(badge.symbolBaselineOffset),
+            width: symbolSize.width,
+            height: symbolSize.height
+        )
+        symbol.draw(in: textRect, withAttributes: attributes)
     }
 
     @objc
     private func handleMonitoredRootsDidChange(_ notification: Notification) {
-        if
-            let roots = notification.userInfo?[MacSVNMonitoredRootsStore.distributedNotificationRootsKey] as? [String]
-        {
-            diagnosticLog("handleMonitoredRootsDidChange notifiedRoots=\(roots.count)")
-            applyMonitoredRoots(roots)
-            return
-        }
-
         diagnosticLog("handleMonitoredRootsDidChange")
         reloadMonitoredRoots()
     }
@@ -240,9 +343,9 @@ public final class FinderSyncExtension: FIFinderSync {
         cachedMonitoredRoots = normalizedRoots
 
         if normalizedRoots.isEmpty {
-            touchMarker(named: "event-roots-empty")
+            diagnosticLog("applyMonitoredRoots empty")
         } else {
-            touchMarker(named: "event-roots-configured")
+            diagnosticLog("applyMonitoredRoots count=\(normalizedRoots.count)")
         }
 
         diagnosticLog(
@@ -272,19 +375,25 @@ public final class FinderSyncExtension: FIFinderSync {
         let semaphore = DispatchSemaphore(value: 0)
         let actionsBox = FinderMenuActionsBox(actions: fallbackActions)
         let startedAt = DispatchTime.now()
-        let statusClient = self.statusClient
+        let statusSnapshotCache = self.statusSnapshotCache
+        let menuBuilder = self.menuBuilder
+        let selectedPaths = context.selectedPaths
 
-        Task { [statusClient, actionsBox] in
-            if let resolvedActions = try? await statusClient.menuActions(
-                rootPath: rootPath,
-                selectedPaths: context.selectedPaths
-            ), !resolvedActions.isEmpty {
-                actionsBox.actions = resolvedActions
+        Task { [statusSnapshotCache, actionsBox] in
+            if let snapshot = await statusSnapshotCache.snapshot(rootPath: rootPath) {
+                let resolvedActions = menuBuilder.actions(
+                    for: selectedPaths,
+                    snapshot: snapshot,
+                    language: language
+                )
+                if !resolvedActions.isEmpty {
+                    actionsBox.actions = resolvedActions
+                }
             }
             semaphore.signal()
         }
 
-        let didResolve = semaphore.wait(timeout: .now() + 1.2) == .success
+        let didResolve = semaphore.wait(timeout: .now() + 0.3) == .success
         let elapsedMs = Int(
             Double(DispatchTime.now().uptimeNanoseconds - startedAt.uptimeNanoseconds) / 1_000_000
         )
@@ -305,6 +414,11 @@ public final class FinderSyncExtension: FIFinderSync {
         let canOperate = hasSelection && rootPath != nil
 
         return [
+            FinderMenuActionDescriptor(
+                command: .updateWorkingCopy,
+                title: localizer.title(for: .updateWorkingCopy),
+                isEnabled: rootPath != nil
+            ),
             FinderMenuActionDescriptor(
                 command: .commitSelected,
                 title: localizer.title(for: .commitSelected),
@@ -391,6 +505,7 @@ public final class FinderSyncExtension: FIFinderSync {
         ).first {
             diagnosticLog("openHostApp activatingRunningApp bundleIdentifier=\(bundleIdentifier)")
             runningApp.activate(options: [.activateAllWindows])
+            return
         }
 
         let logger = self.logger
@@ -409,7 +524,6 @@ public final class FinderSyncExtension: FIFinderSync {
                 "bundleIdentifier=\(runningApp?.bundleIdentifier ?? "nil")",
                 logger: logger
             )
-            runningApp?.activate(options: [.activateAllWindows])
         }
     }
 
@@ -426,49 +540,34 @@ public final class FinderSyncExtension: FIFinderSync {
 
     private static func diagnosticLog(_ message: String, logger: Logger) {
         logger.info("\(message, privacy: .public)")
-        appendDiagnosticLine(message)
+        writeDiagnosticLog(message)
     }
 
-    private static func appendDiagnosticLine(_ message: String) {
+    private static func writeDiagnosticLog(_ message: String) {
         let timestamp = ISO8601DateFormatter().string(from: Date())
-        let line = "\(timestamp) \(message)\n"
-        let logURLs = [
-            URL(fileURLWithPath: NSHomeDirectory()).appending(path: "finder-sync-debug.log"),
-            URL(fileURLWithPath: "/tmp/mactortoisesvn-finder-sync-debug.log")
-        ]
-
-        for logURL in logURLs {
-            if !FileManager.default.fileExists(atPath: logURL.path) {
-                FileManager.default.createFile(atPath: logURL.path, contents: nil)
-            }
-
-            guard let handle = try? FileHandle(forWritingTo: logURL) else {
-                continue
-            }
-
-            do {
-                try handle.seekToEnd()
-                try handle.write(contentsOf: Data(line.utf8))
-                try handle.close()
-            } catch {
-                try? handle.close()
-            }
-        }
-    }
-
-    private func touchMarker(named name: String) {
-        let markerURL = URL(fileURLWithPath: NSHomeDirectory())
-            .appending(path: name)
-
-        if FileManager.default.fileExists(atPath: markerURL.path) {
-            try? FileManager.default.setAttributes(
-                [.modificationDate: Date()],
-                ofItemAtPath: markerURL.path
-            )
+        let line = "[\(timestamp)] \(message)\n"
+        guard let logURL = macSVNDiagnosticLogURL(fileName: "finder-sync-debug.log") else {
             return
         }
-
-        _ = FileManager.default.createFile(atPath: markerURL.path, contents: Data())
+        do {
+            try FileManager.default.createDirectory(
+                at: logURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            guard let data = line.data(using: .utf8) else {
+                return
+            }
+            if FileManager.default.fileExists(atPath: logURL.path),
+               let handle = try? FileHandle(forWritingTo: logURL) {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.close()
+            } else {
+                try data.write(to: logURL, options: .atomic)
+            }
+        } catch {
+            return
+        }
     }
 
     private func menuKindDescription(_ menuKind: FIMenuKind) -> String {
@@ -501,6 +600,8 @@ public final class FinderSyncExtension: FIFinderSync {
 
     private func selector(for command: FinderMenuCommand) -> Selector {
         switch command {
+        case .updateWorkingCopy:
+            return #selector(handleUpdateWorkingCopyMenuItem(_:))
         case .commitSelected:
             return #selector(handleCommitSelectedMenuItem(_:))
         case .diffSelected:
@@ -509,6 +610,23 @@ public final class FinderSyncExtension: FIFinderSync {
             return #selector(handleRefreshNowMenuItem(_:))
         case .openInWorkbench:
             return #selector(handleOpenInWorkbenchMenuItem(_:))
+        }
+    }
+}
+
+private extension FinderBadgeKind {
+    var fillColor: NSColor {
+        switch self {
+        case .modified, .descendantDirty:
+            return NSColor(calibratedRed: 246 / 255, green: 166 / 255, blue: 35 / 255, alpha: 1)
+        case .added:
+            return NSColor(calibratedRed: 52 / 255, green: 199 / 255, blue: 89 / 255, alpha: 1)
+        case .deleted:
+            return NSColor(calibratedRed: 255 / 255, green: 69 / 255, blue: 58 / 255, alpha: 1)
+        case .conflicted:
+            return NSColor(calibratedRed: 191 / 255, green: 90 / 255, blue: 242 / 255, alpha: 1)
+        case .unversioned:
+            return NSColor(calibratedRed: 0 / 255, green: 122 / 255, blue: 255 / 255, alpha: 1)
         }
     }
 }

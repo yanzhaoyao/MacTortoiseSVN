@@ -153,4 +153,54 @@ final class RustCommandBridgeSVNClientTests: XCTestCase {
         XCTAssertTrue(requests[0].arguments.contains("--message"))
         XCTAssertTrue(requests[0].arguments.contains("Add new file"))
     }
+
+    func testShelveUsesSubversionShelveCommand() async throws {
+        let rustRunner = RecordingRunner(results: [])
+        let svnRunner = RecordingSubversionRunner(
+            results: [
+                SubversionCLIInvocationResult(stdout: "", stderr: "", exitCode: 0),
+            ]
+        )
+        let client = RustCommandBridgeSVNClient(
+            bridgeConfiguration: RustBridgeConfiguration(
+                repositoryRoot: "/repo",
+                preferBuiltBinary: false
+            ),
+            rustBridgeRunner: rustRunner,
+            subversionCLIRunner: svnRunner
+        )
+
+        try await client.shelve(
+            paths: ["/repo/README.md"],
+            name: "shelf-a",
+            context: .foreground
+        )
+        let requests = await svnRunner.requests()
+
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].arguments, ["shelve", "--", "shelf-a", "/repo/README.md"])
+    }
+
+    func testUnshelveUsesSubversionUnshelveCommand() async throws {
+        let rustRunner = RecordingRunner(results: [])
+        let svnRunner = RecordingSubversionRunner(
+            results: [
+                SubversionCLIInvocationResult(stdout: "", stderr: "", exitCode: 0),
+            ]
+        )
+        let client = RustCommandBridgeSVNClient(
+            bridgeConfiguration: RustBridgeConfiguration(
+                repositoryRoot: "/repo",
+                preferBuiltBinary: false
+            ),
+            rustBridgeRunner: rustRunner,
+            subversionCLIRunner: svnRunner
+        )
+
+        try await client.unshelve(name: "shelf-a", context: .foreground)
+        let requests = await svnRunner.requests()
+
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].arguments, ["unshelve", "--", "shelf-a"])
+    }
 }

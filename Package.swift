@@ -19,6 +19,7 @@ let package = Package(
         .executable(name: "macsvn-statusd", targets: ["MacSVNStatusServiceCLI"]),
         .executable(name: "MacSVNStatusXPCService", targets: ["MacSVNStatusXPCService"]),
         .executable(name: "MacSVNFinderSync", targets: ["MacSVNFinderSync"]),
+        .executable(name: "MacSVNQuickActions", targets: ["MacSVNQuickActions"]),
         .executable(name: "MacTortoiseSVN", targets: ["MacSVNWorkbench"]),
     ],
     targets: [
@@ -44,8 +45,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "MacSVNFinderSync",
-            dependencies: ["FinderSyncBridge", "StatusServiceXPC"],
+            dependencies: ["CoreTypes", "FinderSyncBridge", "StatusService", "StatusServiceXPC"],
             path: "Apps/MacSVNFinderSync/Sources"
+        ),
+        .executableTarget(
+            name: "MacSVNQuickActions",
+            dependencies: ["FinderSyncBridge"],
+            path: "Apps/MacSVNQuickActions/Sources"
         ),
         .executableTarget(
             name: "MacSVNWorkbench",

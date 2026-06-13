@@ -1,11 +1,13 @@
 import CoreTypes
 import FinderSyncBridge
 import Foundation
+import Security
 import StatusService
 import SVNCore
 
 public enum MacSVNXPCConstants {
     public static let workbenchBundleIdentifier = "com.morningstar.MacTortoiseSVN"
+    public static let finderSyncBundleIdentifier = "com.morningstar.MacTortoiseSVN.FinderSync"
     public static let statusServiceIdentifier = "com.morningstar.MacTortoiseSVN.StatusService"
 }
 
@@ -176,8 +178,14 @@ public final class StatusServiceXPCServer: NSObject, StatusServiceXPCProtocol {
 
 public final class StatusServiceXPCListenerDelegate: NSObject, NSXPCListenerDelegate {
     private let server = StatusServiceXPCServer()
+    private let clientValidator: StatusServiceXPCClientValidating
 
-    public override init() {
+    public override convenience init() {
+        self.init(clientValidator: StatusServiceXPCClientValidator())
+    }
+
+    init(clientValidator: StatusServiceXPCClientValidating) {
+        self.clientValidator = clientValidator
         super.init()
     }
 
@@ -185,6 +193,9 @@ public final class StatusServiceXPCListenerDelegate: NSObject, NSXPCListenerDele
         _ listener: NSXPCListener,
         shouldAcceptNewConnection newConnection: NSXPCConnection
     ) -> Bool {
+        guard clientValidator.shouldAccept(connection: newConnection) else {
+            return false
+        }
         newConnection.exportedInterface = NSXPCInterface(with: StatusServiceXPCProtocol.self)
         newConnection.exportedObject = server
         newConnection.resume()
@@ -192,15 +203,140 @@ public final class StatusServiceXPCListenerDelegate: NSObject, NSXPCListenerDele
     }
 }
 
+protocol StatusServiceXPCClientValidating: Sendable {
+    func shouldAccept(connection: NSXPCConnection) -> Bool
+}
+
+struct StatusServiceXPCClientValidator: StatusServiceXPCClientValidating {
+    private let allowedBundleIdentifiers: Set<String> = [
+        MacSVNXPCConstants.workbenchBundleIdentifier,
+        MacSVNXPCConstants.finderSyncBundleIdentifier,
+    ]
+
+    func shouldAccept(connection: NSXPCConnection) -> Bool {
+        guard let auditToken = connection.macSVNAuditToken else {
+            #if DEBUG
+            return true
+            #else
+            return false
+            #endif
+        }
+        guard let code = SecCode.macSVNGuestCode(auditToken: auditToken) else {
+            #if DEBUG
+            return true
+            #else
+            return false
+            #endif
+        }
+        guard let signingInfo = code.macSVNSigningInfo else {
+            #if DEBUG
+            return true
+            #else
+            return false
+            #endif
+        }
+
+        let bundleIdentifier = signingInfo.bundleIdentifier
+        let teamIdentifier = signingInfo.teamIdentifier
+        let selfTeamIdentifier = SecCode.macSVNCurrentSigningInfo?.teamIdentifier
+        let bundleMatches = bundleIdentifier.map(allowedBundleIdentifiers.contains) == true
+        let teamMatches = teamIdentifier != nil && teamIdentifier == selfTeamIdentifier
+
+        #if DEBUG
+        return bundleMatches && (teamMatches || teamIdentifier == nil || selfTeamIdentifier == nil)
+        #else
+        return bundleMatches && teamMatches
+        #endif
+    }
+}
+
+private struct MacSVNAuditToken {
+    var value: audit_token_t
+}
+
+private struct MacSVNSigningInfo {
+    var bundleIdentifier: String?
+    var teamIdentifier: String?
+}
+
+private extension NSXPCConnection {
+    var macSVNAuditToken: MacSVNAuditToken? {
+        guard responds(to: Selector(("auditToken"))) else {
+            return nil
+        }
+        var token = audit_token_t()
+        withUnsafeMutableBytes(of: &token) { tokenBytes in
+            guard let tokenData = value(forKey: "auditToken") as? NSData else {
+                return
+            }
+            tokenData.getBytes(tokenBytes.baseAddress!, length: min(tokenBytes.count, tokenData.length))
+        }
+        return MacSVNAuditToken(value: token)
+    }
+}
+
+private extension SecCode {
+    static func macSVNGuestCode(auditToken: MacSVNAuditToken) -> SecCode? {
+        var attributes: [CFString: Any] = [:]
+        withUnsafeBytes(of: auditToken.value) { tokenBytes in
+            attributes[kSecGuestAttributeAudit] = Data(tokenBytes)
+        }
+
+        var code: SecCode?
+        let status = SecCodeCopyGuestWithAttributes(
+            nil,
+            attributes as CFDictionary,
+            SecCSFlags(),
+            &code
+        )
+        guard status == errSecSuccess else {
+            return nil
+        }
+        return code
+    }
+
+    static var macSVNCurrentSigningInfo: MacSVNSigningInfo? {
+        var code: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let code else {
+            return nil
+        }
+        return code.macSVNSigningInfo
+    }
+
+    var macSVNSigningInfo: MacSVNSigningInfo? {
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(self, SecCSFlags(), &staticCode) == errSecSuccess,
+              let staticCode
+        else {
+            return nil
+        }
+
+        var info: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
+        guard SecCodeCopySigningInformation(staticCode, flags, &info) == errSecSuccess,
+              let dictionary = info as? [String: Any]
+        else {
+            return nil
+        }
+        return MacSVNSigningInfo(
+            bundleIdentifier: dictionary[kSecCodeInfoIdentifier as String] as? String,
+            teamIdentifier: dictionary[kSecCodeInfoTeamIdentifier as String] as? String
+        )
+    }
+}
+
 actor StatusServiceXPCCoordinator {
     private let runtimePaths: MacSVNRuntimePaths
     private let badgeResolver = FinderBadgeResolver()
     private let menuBuilder = FinderContextMenuBuilder()
+    private let securityScopedBookmarkStore = MacSVNSecurityScopedBookmarkStore()
     private var hosts: [String: StatusServiceHost]
+    private var securityScopedRoots: [String: MacSVNSecurityScopedAccess]
 
     init(runtimePaths: MacSVNRuntimePaths = .currentProcess()) {
         self.runtimePaths = runtimePaths
         self.hosts = [:]
+        self.securityScopedRoots = [:]
     }
 
     func handle(_ request: StatusServiceRequest) async throws -> StatusServiceResponse {
@@ -275,6 +411,7 @@ actor StatusServiceXPCCoordinator {
         }
 
         let normalized = URL(fileURLWithPath: trimmed).standardizedFileURL.path
+        installSecurityScopedAccessIfNeeded(for: normalized)
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: normalized, isDirectory: &isDirectory) else {
             throw StatusServiceXPCError.invalidRequest(
@@ -287,6 +424,14 @@ actor StatusServiceXPCCoordinator {
             )
         }
         return normalized
+    }
+
+    private func installSecurityScopedAccessIfNeeded(for rootPath: String) {
+        guard securityScopedRoots[rootPath] == nil else {
+            return
+        }
+
+        securityScopedRoots[rootPath] = securityScopedBookmarkStore.startAccessing(path: rootPath)
     }
 }
 

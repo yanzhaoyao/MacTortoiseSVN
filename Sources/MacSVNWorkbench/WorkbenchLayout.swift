@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct WorkbenchLayout {
-    static let sidebarWidth: CGFloat = 220
+    static let sidebarWidth: CGFloat = 180
     static let minimumWindowSize = CGSize(width: 780, height: 560)
 
     let size: CGSize

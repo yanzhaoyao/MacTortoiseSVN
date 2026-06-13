@@ -14,6 +14,7 @@ APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_INFO_PLIST="$ROOT_DIR/Apps/MacSVNApp/Info.plist"
 APP_ENTITLEMENTS="$ROOT_DIR/Apps/MacSVNApp/MacSVNWorkbench.entitlements"
 XPC_INFO_PLIST="$ROOT_DIR/Apps/MacSVNStatusService/Info.plist"
+XPC_ENTITLEMENTS="$ROOT_DIR/Apps/MacSVNStatusService/MacSVNStatusService.entitlements"
 XPC_BUNDLE_ID="com.morningstar.MacTortoiseSVN.StatusService"
 XPC_BUNDLE="$APP_BUNDLE/Contents/XPCServices/$XPC_BUNDLE_ID.xpc"
 FINDER_INFO_PLIST="$ROOT_DIR/Apps/MacSVNFinderSync/Info.plist"
@@ -24,10 +25,11 @@ WORKBENCH_EXECUTABLE="$SWIFT_BUILD_DIR/$APP_NAME"
 WORKBENCH_RESOURCE_BUNDLE="$SWIFT_BUILD_DIR/MacTortoiseSVN_MacSVNWorkbench.bundle"
 XPC_EXECUTABLE="$SWIFT_BUILD_DIR/MacSVNStatusXPCService"
 FINDER_EXECUTABLE="$SWIFT_BUILD_DIR/MacSVNFinderSync"
+QUICK_ACTIONS_EXECUTABLE="$SWIFT_BUILD_DIR/MacSVNQuickActions"
 RUST_EXECUTABLE="$RUST_BUILD_DIR/mtsvn-rs"
 ICONSET_DIR="$DIST_DIR/$APP_NAME.iconset"
 ICON_FILE="$DIST_DIR/$APP_NAME.icns"
-LOGO_SOURCE="$ROOT_DIR/Sources/MacSVNWorkbench/Resources/tmsTUCenter.jpg"
+ICON_SOURCE="$ROOT_DIR/Sources/MacSVNWorkbench/Resources/MacTortoiseSVNIcon.png"
 
 if [[ -n "${MACSVN_CODESIGN_IDENTITY:-}" ]]; then
     CODESIGN_IDENTITY="$MACSVN_CODESIGN_IDENTITY"
@@ -41,7 +43,17 @@ else
     fi
 fi
 
+if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
+    echo "warning: 使用 ad-hoc 签名（-）。每次重新构建后 macOS 会把它当成新应用，" >&2
+    echo "warning: 桌面/文稿等文件夹的访问权限（TCC）会重新弹框。" >&2
+    echo "warning: 建议安装 Apple Development 证书，或设置 MACSVN_CODESIGN_IDENTITY 指定稳定的签名身份。" >&2
+fi
+
 mkdir -p "$BUILD_HOME" "$MODULE_CACHE" "$DIST_DIR"
+
+if [[ ! -f "$ICON_SOURCE" ]]; then
+    swift "$ROOT_DIR/scripts/generate_app_icon.swift" "$ICON_SOURCE"
+fi
 
 env \
     HOME="$BUILD_HOME" \
@@ -60,6 +72,12 @@ env \
     CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
     SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
     swift build --product MacSVNFinderSync
+
+env \
+    HOME="$BUILD_HOME" \
+    CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
+    SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
+    swift build --product MacSVNQuickActions
 
 (
     cd "$ROOT_DIR/rust"
@@ -87,13 +105,17 @@ cp "$APP_INFO_PLIST" "$APP_BUNDLE/Contents/Info.plist"
 cp "$WORKBENCH_EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp -R "$WORKBENCH_RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
 cp "$RUST_EXECUTABLE" "$APP_BUNDLE/Contents/Resources/bin/mtsvn-rs"
-chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$APP_BUNDLE/Contents/Resources/bin/mtsvn-rs"
+cp "$QUICK_ACTIONS_EXECUTABLE" "$APP_BUNDLE/Contents/Resources/bin/MacSVNQuickActions"
+chmod +x \
+    "$APP_BUNDLE/Contents/MacOS/$APP_NAME" \
+    "$APP_BUNDLE/Contents/Resources/bin/mtsvn-rs" \
+    "$APP_BUNDLE/Contents/Resources/bin/MacSVNQuickActions"
 
 mkdir -p "$ICONSET_DIR"
 for size in 16 32 128 256 512; do
     retina_size=$((size * 2))
-    sips -s format png -z "$size" "$size" "$LOGO_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
-    sips -s format png -z "$retina_size" "$retina_size" "$LOGO_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
+    sips -s format png -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}.png" >/dev/null
+    sips -s format png -z "$retina_size" "$retina_size" "$ICON_SOURCE" --out "$ICONSET_DIR/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET_DIR" -o "$ICON_FILE"
 cp "$ICON_FILE" "$APP_BUNDLE/Contents/Resources/$APP_NAME.icns"
@@ -110,10 +132,11 @@ chmod +x \
     "$XPC_BUNDLE/Contents/Resources/bin/mtsvn-rs"
 
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE/Contents/Resources/bin/mtsvn-rs"
+/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE/Contents/Resources/bin/MacSVNQuickActions"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" "$XPC_BUNDLE/Contents/Resources/bin/mtsvn-rs"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$FINDER_ENTITLEMENTS" "$FINDER_BUNDLE/Contents/MacOS/MacSVNFinderSync"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --preserve-metadata=entitlements "$FINDER_BUNDLE"
-/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" "$XPC_BUNDLE"
+/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$XPC_ENTITLEMENTS" "$XPC_BUNDLE"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$APP_ENTITLEMENTS" "$APP_BUNDLE"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$FINDER_ENTITLEMENTS" "$FINDER_BUNDLE/Contents/MacOS/MacSVNFinderSync"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --preserve-metadata=entitlements "$FINDER_BUNDLE"

@@ -349,7 +349,7 @@ public actor SubversionRepositoryInspector {
     ) async throws -> SVNRepositorySummary {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["info", "--xml", rootPath],
+            arguments: ["info", "--xml", "--", rootPath],
             workingDirectory: rootPath
         )
         let stdout = try await run(request)
@@ -372,7 +372,7 @@ public actor SubversionRepositoryInspector {
 
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["log", "--xml", "-l", String(limit), historyTarget.target],
+            arguments: ["log", "--xml", "-l", String(limit), "--", historyTarget.target],
             workingDirectory: historyTarget.workingDirectory
         )
         let stdout = try await run(request)
@@ -386,7 +386,7 @@ public actor SubversionRepositoryInspector {
     ) async throws -> SVNHistoryEntryDetail {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["log", "--xml", "-v", "-r", String(revision), rootPath],
+            arguments: ["log", "--xml", "-v", "-r", String(revision), "--", rootPath],
             workingDirectory: rootPath
         )
         let stdout = try await run(request)
@@ -399,7 +399,7 @@ public actor SubversionRepositoryInspector {
     ) async throws -> SVNRepositoryBrowserListing {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["list", "--xml", url],
+            arguments: ["list", "--xml", "--", url],
             workingDirectory: nil
         )
         let stdout = try await run(request)
@@ -415,7 +415,7 @@ public actor SubversionRepositoryInspector {
         if let revision {
             arguments += ["-r", String(revision)]
         }
-        arguments.append(url)
+        arguments += ["--", url]
 
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
@@ -432,7 +432,7 @@ public actor SubversionRepositoryInspector {
     ) async throws -> SVNFileContentPreview {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["cat", "-r", "BASE", path],
+            arguments: ["cat", "-r", "BASE", "--", path],
             workingDirectory: (path as NSString).deletingLastPathComponent
         )
         let result = try await runRaw(request)
@@ -446,7 +446,7 @@ public actor SubversionRepositoryInspector {
     ) async throws {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["export", "-r", "BASE", path, destinationPath, "--force"],
+            arguments: ["export", "-r", "BASE", "--force", "--", path, destinationPath],
             workingDirectory: (path as NSString).deletingLastPathComponent
         )
         _ = try await runRaw(request)
@@ -715,6 +715,16 @@ private final class SubversionLogXMLParserDelegate: NSObject, XMLParserDelegate 
         standardFormatter.formatOptions = [.withInternetDateTime]
         return standardFormatter.date(from: text)
     }
+}
+
+func parseSubversionLogXML(_ xml: String) -> [SVNHistoryEntry] {
+    let delegate = SubversionLogXMLParserDelegate()
+    let parser = XMLParser(data: Data(xml.utf8))
+    parser.delegate = delegate
+    guard parser.parse() else {
+        return []
+    }
+    return delegate.entries
 }
 
 private final class SubversionVerboseLogXMLParserDelegate: NSObject, XMLParserDelegate {

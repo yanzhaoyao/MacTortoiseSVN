@@ -50,6 +50,15 @@ private actor MockStatusClient: SVNClient {
     ) async throws {
     }
 
+    func log(
+        path: String,
+        revision: Int64,
+        limit: Int,
+        context: SVNCommandContext
+    ) async throws -> [SVNHistoryEntry] {
+        []
+    }
+
     func statusRequests() -> [(rootPath: String, includeUnversioned: Bool)] {
         receivedStatusRequests
     }
@@ -109,6 +118,47 @@ final class StatusServiceHostTests: XCTestCase {
         XCTAssertEqual(loadedSnapshot, snapshot)
         XCTAssertEqual(dirtyState?.paths, ["/repo/README.md", "/repo/notes.txt"])
         XCTAssertEqual(dirtyState?.requiresFullRefresh, false)
+    }
+
+    func testSQLiteStoreReadOnlyModeLoadsExistingSnapshotsButCannotWrite() async throws {
+        let databaseURL = temporaryDatabaseURL()
+        let writableStore = try SQLiteStatusCacheStore(databaseURL: databaseURL)
+        let snapshot = BadgeSnapshot(
+            rootPath: "/repo",
+            generatedAt: Date(timeIntervalSince1970: 123),
+            entries: ["/repo/README.md": .modified]
+        )
+        try await writableStore.save(snapshot: snapshot)
+
+        let readOnlyStore = try SQLiteStatusCacheStore(databaseURL: databaseURL, readOnly: true)
+        let loadedSnapshot = try await readOnlyStore.loadSnapshot(for: "/repo")
+
+        XCTAssertEqual(loadedSnapshot, snapshot)
+        do {
+            try await readOnlyStore.save(snapshot: snapshot)
+            XCTFail("Read-only SQLite store should reject writes.")
+        } catch {
+            XCTAssertNotNil(error as? SQLiteStatusCacheError)
+        }
+    }
+
+    func testSQLiteStoreReadOnlyModeDoesNotCreateMissingDatabase() {
+        let databaseURL = temporaryDatabaseURL()
+
+        XCTAssertThrowsError(try SQLiteStatusCacheStore(databaseURL: databaseURL, readOnly: true))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: databaseURL.path))
+    }
+
+    func testDefaultDatabaseURLUsesStableHashFilename() {
+        let firstCollisionCandidate = StatusServiceConfiguration.defaultDatabaseURL(for: "/tmp/a_b")
+        let secondCollisionCandidate = StatusServiceConfiguration.defaultDatabaseURL(for: "/tmp/a/b")
+        let standardizedFirst = StatusServiceConfiguration.defaultDatabaseURL(for: "/tmp/project/../project")
+        let standardizedSecond = StatusServiceConfiguration.defaultDatabaseURL(for: "/tmp/project")
+
+        XCTAssertNotEqual(firstCollisionCandidate.lastPathComponent, secondCollisionCandidate.lastPathComponent)
+        XCTAssertEqual(standardizedFirst.lastPathComponent, standardizedSecond.lastPathComponent)
+        XCTAssertLessThan(firstCollisionCandidate.lastPathComponent.count, 255)
+        XCTAssertTrue(firstCollisionCandidate.lastPathComponent.hasSuffix(".sqlite3"))
     }
 
     func testStatusServicePromotesLargeDirtySetsToFullRefresh() async throws {

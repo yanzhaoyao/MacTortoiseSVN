@@ -16,13 +16,21 @@ struct RepositoryBrowserFullView: View {
             Divider()
             content
         }
+        .background(.ultraThinMaterial)
         .background(CommitPalette.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous)
-                .strokeBorder(CommitPalette.subtleBorder, lineWidth: 0.5)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [CommitPalette.glassHighlight, CommitPalette.panelBorder, Color.primary.opacity(0.10)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
-        .shadow(color: .black.opacity(0.06), radius: CommitPalette.panelShadowRadius, y: CommitPalette.panelShadowYOffset)
+        .shadow(color: .black.opacity(0.12), radius: CommitPalette.panelShadowRadius, y: CommitPalette.panelShadowYOffset)
     }
 
     private var header: some View {

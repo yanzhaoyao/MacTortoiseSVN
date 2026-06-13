@@ -70,6 +70,74 @@ public struct SVNResolveResult: Sendable, Hashable, Codable {
     }
 }
 
+public struct SVNCheckoutResult: Sendable, Hashable, Codable {
+    public var repositoryURL: String
+    public var destinationPath: String
+    public var revision: Int64?
+    public var rawOutput: String
+
+    public init(repositoryURL: String, destinationPath: String, revision: Int64?, rawOutput: String) {
+        self.repositoryURL = repositoryURL
+        self.destinationPath = destinationPath
+        self.revision = revision
+        self.rawOutput = rawOutput
+    }
+}
+
+public struct SVNImportResult: Sendable, Hashable, Codable {
+    public var sourcePath: String
+    public var repositoryURL: String
+    public var revision: Int64?
+    public var rawOutput: String
+
+    public init(sourcePath: String, repositoryURL: String, revision: Int64?, rawOutput: String) {
+        self.sourcePath = sourcePath
+        self.repositoryURL = repositoryURL
+        self.revision = revision
+        self.rawOutput = rawOutput
+    }
+}
+
+public struct SVNExportResult: Sendable, Hashable, Codable {
+    public var source: String
+    public var destinationPath: String
+    public var rawOutput: String
+
+    public init(source: String, destinationPath: String, rawOutput: String) {
+        self.source = source
+        self.destinationPath = destinationPath
+        self.rawOutput = rawOutput
+    }
+}
+
+public struct SVNSwitchResult: Sendable, Hashable, Codable {
+    public var workingCopyPath: String
+    public var repositoryURL: String
+    public var revision: Int64?
+    public var rawOutput: String
+
+    public init(workingCopyPath: String, repositoryURL: String, revision: Int64?, rawOutput: String) {
+        self.workingCopyPath = workingCopyPath
+        self.repositoryURL = repositoryURL
+        self.revision = revision
+        self.rawOutput = rawOutput
+    }
+}
+
+public struct SVNRelocateResult: Sendable, Hashable, Codable {
+    public var workingCopyPath: String
+    public var fromURL: String
+    public var toURL: String
+    public var rawOutput: String
+
+    public init(workingCopyPath: String, fromURL: String, toURL: String, rawOutput: String) {
+        self.workingCopyPath = workingCopyPath
+        self.fromURL = fromURL
+        self.toURL = toURL
+        self.rawOutput = rawOutput
+    }
+}
+
 public actor SubversionWorkspaceOperator {
     private let runner: any SubversionCommandRunning
 
@@ -91,11 +159,12 @@ public actor SubversionWorkspaceOperator {
             executablePath: "svn",
             arguments: [
                 "update",
-                rootPath,
                 "--depth",
                 depth.rawValue,
                 "--accept",
                 accept,
+                "--",
+                rootPath,
             ],
             workingDirectory: rootPath
         )
@@ -119,11 +188,11 @@ public actor SubversionWorkspaceOperator {
             )
         }
 
-        var arguments = ["revert"] + normalizedPaths
-        arguments += ["--depth", recursive ? "infinity" : "empty"]
+        var arguments = ["revert", "--depth", recursive ? "infinity" : "empty"]
         if removeAdded {
             arguments.append("--remove-added")
         }
+        arguments += ["--"] + normalizedPaths
 
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
@@ -144,7 +213,7 @@ public actor SubversionWorkspaceOperator {
     ) async throws -> SVNCleanupResult {
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
-            arguments: ["cleanup", rootPath],
+            arguments: ["cleanup", "--", rootPath],
             workingDirectory: rootPath
         )
         let result = try await run(request)
@@ -167,9 +236,9 @@ public actor SubversionWorkspaceOperator {
             )
         }
 
-        var arguments = ["resolve"] + normalizedPaths
-        arguments += ["--accept", accept]
+        var arguments = ["resolve", "--accept", accept]
         arguments += ["--depth", recursive ? "infinity" : "empty"]
+        arguments += ["--"] + normalizedPaths
 
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",
@@ -181,6 +250,138 @@ public actor SubversionWorkspaceOperator {
             result.stdout,
             requestedPaths: normalizedPaths,
             accept: accept
+        )
+    }
+
+    public func checkout(
+        repositoryURL: String,
+        destinationPath: String,
+        depth: SVNDepth = .infinity,
+        context: SVNCommandContext
+    ) async throws -> SVNCheckoutResult {
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: [
+                "checkout",
+                "--depth",
+                depth.rawValue,
+                "--",
+                repositoryURL,
+                destinationPath,
+            ],
+            workingDirectory: (destinationPath as NSString).deletingLastPathComponent
+        )
+        let result = try await run(request)
+        return SVNCheckoutResult(
+            repositoryURL: repositoryURL,
+            destinationPath: destinationPath,
+            revision: parseResultingRevision(fromText: result.stdout),
+            rawOutput: result.stdout
+        )
+    }
+
+    public func importPath(
+        sourcePath: String,
+        repositoryURL: String,
+        message: String,
+        context: SVNCommandContext
+    ) async throws -> SVNImportResult {
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: [
+                "import",
+                "-m",
+                message,
+                "--",
+                sourcePath,
+                repositoryURL,
+            ],
+            workingDirectory: (sourcePath as NSString).deletingLastPathComponent
+        )
+        let result = try await run(request)
+        return SVNImportResult(
+            sourcePath: sourcePath,
+            repositoryURL: repositoryURL,
+            revision: parseCommittedRevision(fromText: result.stdout),
+            rawOutput: result.stdout
+        )
+    }
+
+    public func export(
+        source: String,
+        destinationPath: String,
+        force: Bool = true,
+        context: SVNCommandContext
+    ) async throws -> SVNExportResult {
+        var arguments = ["export"]
+        if force {
+            arguments.append("--force")
+        }
+        arguments += ["--", source, destinationPath]
+
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: arguments,
+            workingDirectory: (destinationPath as NSString).deletingLastPathComponent
+        )
+        let result = try await run(request)
+        return SVNExportResult(
+            source: source,
+            destinationPath: destinationPath,
+            rawOutput: result.stdout
+        )
+    }
+
+    public func switchWorkingCopy(
+        workingCopyPath: String,
+        repositoryURL: String,
+        depth: SVNDepth = .infinity,
+        context: SVNCommandContext
+    ) async throws -> SVNSwitchResult {
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: [
+                "switch",
+                "--depth",
+                depth.rawValue,
+                "--",
+                repositoryURL,
+                workingCopyPath,
+            ],
+            workingDirectory: workingCopyPath
+        )
+        let result = try await run(request)
+        return SVNSwitchResult(
+            workingCopyPath: workingCopyPath,
+            repositoryURL: repositoryURL,
+            revision: parseResultingRevision(fromText: result.stdout),
+            rawOutput: result.stdout
+        )
+    }
+
+    public func relocate(
+        workingCopyPath: String,
+        fromURL: String,
+        toURL: String,
+        context: SVNCommandContext
+    ) async throws -> SVNRelocateResult {
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: [
+                "relocate",
+                "--",
+                fromURL,
+                toURL,
+                workingCopyPath,
+            ],
+            workingDirectory: workingCopyPath
+        )
+        let result = try await run(request)
+        return SVNRelocateResult(
+            workingCopyPath: workingCopyPath,
+            fromURL: fromURL,
+            toURL: toURL,
+            rawOutput: result.stdout
         )
     }
 
@@ -266,6 +467,8 @@ public actor SubversionWorkspaceOperator {
         let prefixes = [
             "Updated to revision ",
             "At revision ",
+            "Checked out revision ",
+            "Exported revision ",
         ]
 
         guard let prefix = prefixes.first(where: { trimmed.hasPrefix($0) }) else {
@@ -276,6 +479,27 @@ public actor SubversionWorkspaceOperator {
             .dropFirst(prefix.count)
             .trimmingCharacters(in: CharacterSet(charactersIn: ". "))
 
+        return Int64(revisionPortion)
+    }
+
+    private func parseResultingRevision(fromText text: String) -> Int64? {
+        for line in text.split(separator: "\n").map(String.init).reversed() {
+            if let revision = parseResultingRevision(from: line) {
+                return revision
+            }
+        }
+
+        return nil
+    }
+
+    private func parseCommittedRevision(fromText text: String) -> Int64? {
+        let marker = "Committed revision "
+        guard let markerRange = text.range(of: marker, options: .backwards) else {
+            return nil
+        }
+
+        let revisionPortion = text[markerRange.upperBound...]
+            .trimmingCharacters(in: CharacterSet(charactersIn: ". \n\r\t"))
         return Int64(revisionPortion)
     }
 
@@ -334,8 +558,8 @@ public actor SubversionWorkspaceOperator {
             )
         }
 
-        var arguments = ["revert", "-r", String(revision)] + normalizedPaths
-        arguments += ["--depth", recursive ? "infinity" : "empty"]
+        var arguments = ["revert", "-r", String(revision), "--depth", recursive ? "infinity" : "empty"]
+        arguments += ["--"] + normalizedPaths
 
         let request = SubversionCLIInvocationRequest(
             executablePath: "svn",

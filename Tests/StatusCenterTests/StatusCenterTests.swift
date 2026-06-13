@@ -46,6 +46,15 @@ private actor MockSVNClient: SVNClient {
         context: SVNCommandContext
     ) async throws {
     }
+
+    func log(
+        path: String,
+        revision: Int64,
+        limit: Int,
+        context: SVNCommandContext
+    ) async throws -> [SVNHistoryEntry] {
+        []
+    }
 }
 
 final class StatusCenterTests: XCTestCase {

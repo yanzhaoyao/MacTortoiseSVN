@@ -42,12 +42,20 @@ struct HeaderMetricChip: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(CommitPalette.subtleBorder, lineWidth: 0.5)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [CommitPalette.glassHighlight, CommitPalette.subtleBorder],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.6
+                )
         )
-        .shadow(color: Color.black.opacity(0.04), radius: 2, x: 0, y: 1)
+        .shadow(color: Color.black.opacity(0.05), radius: 5, x: 0, y: 2)
     }
 }
 
@@ -60,16 +68,24 @@ struct ToolbarActionButton: View {
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: symbol)
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(isEnabled ? CommitPalette.textPrimary : CommitPalette.textMuted)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(CommitPalette.subtleBorder, lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [CommitPalette.glassHighlight, CommitPalette.subtleBorder],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.6
+                        )
                 )
-                .shadow(color: Color.black.opacity(0.04), radius: 2, x: 0, y: 1)
+                .shadow(color: Color.black.opacity(0.05), radius: 5, x: 0, y: 2)
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -88,12 +104,20 @@ struct ToolbarIconButton: View {
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(isEnabled ? CommitPalette.textPrimary : CommitPalette.textMuted)
                 .frame(width: 34, height: 34)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .background(CommitPalette.toolbarFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(CommitPalette.subtleBorder, lineWidth: 0.5)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [CommitPalette.glassHighlight, CommitPalette.subtleBorder],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 0.6
+                        )
                 )
-                .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
+                .shadow(color: Color.black.opacity(0.05), radius: 5, x: 0, y: 2)
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -138,41 +162,58 @@ struct CommitMessageEditor: View {
             RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
                 .fill(CommitPalette.editorBackground)
 
+            RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
+                .stroke(Color.black.opacity(0.16), lineWidth: 3)
+                .blur(radius: 3)
+                .offset(x: 0, y: 1)
+                .mask(
+                    RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.black,
+                                    Color.black.opacity(0.78),
+                                    Color.clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                )
+
+            RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
+                .strokeBorder(CommitPalette.subtleBorderLight, lineWidth: 0.5)
+
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(placeholder)
-                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(CommitPalette.textMuted)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
             }
 
             editorField
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: CommitPalette.chromeCornerRadius, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.05), lineWidth: 0.5)
-        )
-        .shadow(color: Color.black.opacity(0.02), radius: 3, x: 0, y: 1)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 92)
     }
 
     @ViewBuilder
     private var editorField: some View {
         if let isFocused {
             TextEditor(text: $text)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(CommitPalette.textPrimary)
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
-                .padding(10)
+                .padding(7)
                 .focused(isFocused)
         } else {
             TextEditor(text: $text)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(CommitPalette.textPrimary)
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
-                .padding(10)
+                .padding(7)
         }
     }
 }
@@ -181,95 +222,75 @@ struct CommitPanel<HeaderTrailing: View, Content: View>: View {
     let title: String
     let headerTrailing: HeaderTrailing
     let content: Content
+    let isFirst: Bool
+    let isLast: Bool
 
     init(
         title: String,
+        isFirst: Bool = true,
+        isLast: Bool = true,
         @ViewBuilder headerTrailing: () -> HeaderTrailing,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
+        self.isFirst = isFirst
+        self.isLast = isLast
         self.headerTrailing = headerTrailing()
         self.content = content()
     }
 
     var body: some View {
-        Section(
-            header: VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(CommitPalette.textPrimary)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(title)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(CommitPalette.textPrimary)
 
-                    Spacer(minLength: 0)
-                    headerTrailing
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 16)
-                .padding(.bottom, 14)
-
-                Divider()
-                    .overlay(CommitPalette.border)
+                Spacer(minLength: 0)
+                headerTrailing
             }
-            .background(
-                .ultraThinMaterial,
-                in: UnevenRoundedRectangle(topLeadingRadius: CommitPalette.panelCornerRadius, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: CommitPalette.panelCornerRadius, style: .continuous)
-            )
-            .background(
-                CommitPalette.panelBackground,
-                in: UnevenRoundedRectangle(topLeadingRadius: CommitPalette.panelCornerRadius, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: CommitPalette.panelCornerRadius, style: .continuous)
-            )
-            .overlay(
-                UnevenRoundedRectangle(topLeadingRadius: CommitPalette.panelCornerRadius, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: CommitPalette.panelCornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.primary.opacity(0.15), Color.clear],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.5
-                    )
-            )
-            .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 1)
-        ) {
+            .padding(.horizontal, 14)
+            .padding(.top, 11)
+            .padding(.bottom, 9)
+
+            Divider()
+                .overlay(CommitPalette.border)
+
             content
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .background(
-                    .ultraThinMaterial,
-                    in: UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: CommitPalette.panelCornerRadius, bottomTrailingRadius: CommitPalette.panelCornerRadius, topTrailingRadius: 0, style: .continuous)
-                )
-                .background(
-                    CommitPalette.panelBackground,
-                    in: UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: CommitPalette.panelCornerRadius, bottomTrailingRadius: CommitPalette.panelCornerRadius, topTrailingRadius: 0, style: .continuous)
-                )
-                .overlay(
-                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: CommitPalette.panelCornerRadius, bottomTrailingRadius: CommitPalette.panelCornerRadius, topTrailingRadius: 0, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [Color.clear, Color.primary.opacity(0.08)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 0.5
-                        )
-                )
-                .shadow(
-                    color: Color.black.opacity(0.08),
-                    radius: CommitPalette.panelShadowRadius,
-                    x: 0,
-                    y: CommitPalette.panelShadowYOffset
-                )
-                .padding(.bottom, CommitPalette.workspaceGap)
         }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous))
+        .background(CommitPalette.panelBackground, in: RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous)
+                .strokeBorder(CommitPalette.panelBorder, lineWidth: 1)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius - 1, style: .continuous)
+                .inset(by: 1)
+                .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.6)
+        )
+        .shadow(
+            color: Color.black.opacity(0.14),
+            radius: max(10, CommitPalette.panelShadowRadius - 4),
+            x: 0,
+            y: max(4, CommitPalette.panelShadowYOffset - 2)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous))
         .padding(.horizontal, CommitPalette.panelInset)
+        .padding(.bottom, max(10, CommitPalette.workspaceGap - 6))
     }
 }
 
 extension CommitPanel where HeaderTrailing == EmptyView {
     init(
         title: String,
+        isFirst: Bool = true,
+        isLast: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
-        self.init(title: title, headerTrailing: { EmptyView() }, content: content)
+        self.init(title: title, isFirst: isFirst, isLast: isLast, headerTrailing: { EmptyView() }, content: content)
     }
 }
 
@@ -343,10 +364,10 @@ struct InlineCapsule: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .font(.system(size: 10, weight: .bold, design: .rounded))
             .foregroundStyle(tint)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .background(tint.opacity(0.16), in: Capsule())
     }
 }
@@ -407,10 +428,12 @@ struct FooterActionButtonModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .font(.system(size: 14, weight: .bold, design: .rounded))
+            .font(.system(size: 12, weight: .bold, design: .rounded))
             .foregroundStyle(kind == .primary ? Color.white : CommitPalette.textPrimary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .frame(minWidth: 86)
+            .padding(.vertical, 8)
             .background(backgroundColor, in: Capsule())
             .overlay(
                 Capsule()
@@ -421,7 +444,7 @@ struct FooterActionButtonModifier: ViewModifier {
                         lineWidth: 0.5
                     )
             )
-            .shadow(color: backgroundColor.opacity(kind == .primary ? 0.3 : 0.05), radius: kind == .primary ? 8 : 4, x: 0, y: 3)
+            .shadow(color: shadowColor, radius: kind == .primary ? 5 : 2, x: 0, y: 2)
     }
 
     private var backgroundColor: Color {
@@ -429,8 +452,32 @@ struct FooterActionButtonModifier: ViewModifier {
         case .primary:
             return CommitPalette.primaryButton
         case .secondary:
-            return CommitPalette.toolbarFill
+            return Color(nsColor: .controlColor).opacity(0.55)
         }
+    }
+
+    private var shadowColor: Color {
+        kind == .primary
+            ? CommitPalette.accent.opacity(0.25)
+            : Color.black.opacity(0.04)
+    }
+}
+
+struct SidebarVisibilityGlyph: View {
+    let isSidebarVisible: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .stroke(CommitPalette.textSecondary.opacity(0.72), lineWidth: 1.25)
+                .frame(width: 15, height: 13)
+
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(CommitPalette.accent.opacity(isSidebarVisible ? 0.9 : 0.42))
+                .frame(width: 4, height: 11)
+                .offset(x: -5.5)
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -440,10 +487,10 @@ struct StatusBadge: View {
 
     var body: some View {
         Text(localizer.title(for: status))
-            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .font(.system(size: 10, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .background(status.color, in: Capsule())
     }
 }

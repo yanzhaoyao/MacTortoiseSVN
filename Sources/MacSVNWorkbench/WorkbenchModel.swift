@@ -3,6 +3,7 @@ import CoreTypes
 import FinderSyncBridge
 import Foundation
 import IntegrationKit
+import StatusCenter
 import StatusService
 import StatusServiceXPC
 import SVNCore
@@ -10,8 +11,6 @@ import SwiftUI
 
 @MainActor
 final class WorkbenchModel: NSObject, ObservableObject {
-    private static let lastWorkingCopyDefaultsKey = "MacSVNLastWorkingCopyRoot"
-
     enum DiffPreviewMode: String, CaseIterable, Identifiable {
         case workingCopy
         case historyRevision
@@ -29,6 +28,33 @@ final class WorkbenchModel: NSObject, ObservableObject {
             propertyModified: Bool
         )
         case historyRevision(rootPath: String, revision: Int64)
+    }
+
+    private struct AddPreviewConfirmation {
+        var paths: [String]
+        var depth: SVNDepth
+    }
+
+    private struct TextPromptField {
+        var label: String
+        var value: String = ""
+    }
+
+    struct UpdateActivity: Equatable {
+        enum State: Equatable {
+            case running
+            case completed
+            case failed(String)
+        }
+
+        var state: State
+        var rootPath: String
+        var displayPaths: [String]
+        var revision: Int64?
+        var hasConflicts: Bool
+        var startedAt: Date
+        var completedAt: Date?
+        var rawOutput: String
     }
 
     struct Entry: Identifiable, Hashable {
@@ -65,6 +91,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     @Published var treeNodes: [ChangeTreeNode] = []
     @Published private(set) var selectedPaths: Set<String> = []
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isRefreshScheduled = false
     @Published private(set) var isMonitoring = false
     @Published private(set) var badgeEntryCount = 0
     @Published private(set) var dirtyCount = 0
@@ -83,6 +110,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     @Published private(set) var isLoadingRepositoryBrowserPreview = false
     @Published private(set) var recentHistory: [SVNHistoryEntry] = []
     @Published private(set) var recentHistoryError: String?
+    @Published private(set) var isLoadingRecentHistory = false
     @Published private(set) var selectedHistoryRevision: Int64?
     @Published private(set) var selectedHistoryEntryDetail: SVNHistoryEntryDetail?
     @Published private(set) var isLoadingHistoryDetail = false
@@ -94,6 +122,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     @Published private(set) var isLaunchingExternalDiff = false
     @Published private(set) var statusNotice: WorkbenchNotice
     @Published private(set) var lastError: String?
+    @Published private(set) var updateActivitiesByRoot: [String: UpdateActivity] = [:]
     @Published private(set) var externalTools: [ExternalToolProfile] = []
     @Published var refreshStatusAfterCommit = true
     @Published private(set) var isRunningWorkspaceOperation = false
@@ -111,6 +140,50 @@ final class WorkbenchModel: NSObject, ObservableObject {
             guard oldValue != hideDiffPreviewInCompactWindow else {
                 return
             }
+            savePresentationPreferences()
+        }
+    }
+    @Published var backendMode: WorkbenchBackendMode {
+        didSet {
+            guard oldValue != backendMode else { return }
+            resetConfiguredServicesForPreferenceChange()
+            savePresentationPreferences()
+        }
+    }
+    @Published var preserveModificationTimes: Bool {
+        didSet {
+            guard oldValue != preserveModificationTimes else { return }
+            resetConfiguredServicesForPreferenceChange()
+            savePresentationPreferences()
+        }
+    }
+    @Published var maxConcurrentOperations: Int {
+        didSet {
+            maxConcurrentOperations = min(max(maxConcurrentOperations, 1), 8)
+            guard oldValue != maxConcurrentOperations else { return }
+            resetConfiguredServicesForPreferenceChange()
+            savePresentationPreferences()
+        }
+    }
+    @Published var badgeEntryLimit: Int {
+        didSet {
+            badgeEntryLimit = min(max(badgeEntryLimit, 256), 50000)
+            guard oldValue != badgeEntryLimit else { return }
+            resetConfiguredServicesForPreferenceChange()
+            savePresentationPreferences()
+        }
+    }
+    @Published var maxIncrementalDirtyPaths: Int {
+        didSet {
+            maxIncrementalDirtyPaths = min(max(maxIncrementalDirtyPaths, 16), 4096)
+            guard oldValue != maxIncrementalDirtyPaths else { return }
+            resetConfiguredServicesForPreferenceChange()
+            savePresentationPreferences()
+        }
+    }
+    @Published var selectedExternalDiffToolID: String {
+        didSet {
+            guard oldValue != selectedExternalDiffToolID else { return }
             savePresentationPreferences()
         }
     }
@@ -170,6 +243,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     private var diffInspector: SubversionDiffInspector?
     private var hasQueuedRefresh = false
     private var queuedRefreshNeedsFullRescan = false
+    private var scheduledRefreshNeedsFullRescan = false
     private var configuredRootPath: String?
     private var pendingWorkbenchCommand: MacSVNWorkbenchCommand?
     private var lastHandledWorkbenchCommandID: UUID?
@@ -179,6 +253,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     private let workbenchCommandStore = MacSVNWorkbenchCommandStore()
     private let presentationPreferencesStore = WorkbenchPresentationPreferencesStore()
     private let bookmarkStore = WorkspaceBookmarkStore()
+    private let securityScopedBookmarkStore = MacSVNSecurityScopedBookmarkStore()
     private let registry = ExternalToolRegistry()
     private let externalToolLauncher = ExternalToolLauncher()
     private let runner = ProcessSubversionRunner()
@@ -188,13 +263,14 @@ final class WorkbenchModel: NSObject, ObservableObject {
     private var lastDiffPreviewRequest: DiffPreviewRequestKey?
     private let externalDiffArtifactsRootURL: URL
     private var externalDiffArtifactDirectories: [URL] = []
+    private var rootSecurityScopedAccess: MacSVNSecurityScopedAccess?
+    private var isRecentHistoryRequestRunning = false
+    private var historyDetailRequestRevision: Int64?
 
     override init() {
         let initialCommand = MacSVNWorkbenchCommandStore().loadCommand()
         let initialRoot = initialCommand?.rootPath
             ?? CommandLine.arguments.dropFirst().first
-            ?? UserDefaults.standard.string(forKey: Self.lastWorkingCopyDefaultsKey)
-            ?? MacSVNMonitoredRootsStore().loadRoots().first
             ?? ""
         let initialLanguage = MacSVNLanguageStore().loadLanguage()
         let initialPresentationPreferences = WorkbenchPresentationPreferencesStore().load()
@@ -202,6 +278,12 @@ final class WorkbenchModel: NSObject, ObservableObject {
         self.language = initialLanguage
         self.defaultWindowPreset = initialPresentationPreferences.defaultWindowPreset
         self.hideDiffPreviewInCompactWindow = initialPresentationPreferences.hideDiffPreviewInCompactWindow
+        self.backendMode = initialPresentationPreferences.backendMode
+        self.preserveModificationTimes = initialPresentationPreferences.preserveModificationTimes
+        self.maxConcurrentOperations = initialPresentationPreferences.maxConcurrentOperations
+        self.badgeEntryLimit = initialPresentationPreferences.badgeEntryLimit
+        self.maxIncrementalDirtyPaths = initialPresentationPreferences.maxIncrementalDirtyPaths
+        self.selectedExternalDiffToolID = initialPresentationPreferences.selectedExternalDiffToolID
         self.visibilityPrefs = initialPresentationPreferences
         self.isSidebarVisible = initialPresentationPreferences.showSidebar
         self.bookmarks = WorkspaceBookmarkStore().load()
@@ -242,16 +324,17 @@ final class WorkbenchModel: NSObject, ObservableObject {
             )
         }
 
-        if !initialRoot.isEmpty {
+        if initialCommand?.rootPath != nil {
             broadcastCurrentMonitoredRoot()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                self?.broadcastCurrentMonitoredRoot()
-            }
-            requestRefresh(forceFullRefresh: initialCommand != nil)
+            requestRefresh(forceFullRefresh: true)
         }
 
         Task {
-            externalTools = await registry.bootstrapDefaultProfiles()
+            let profiles = await registry.bootstrapDefaultProfiles()
+            externalTools = profiles
+            if selectedExternalDiffToolID.isEmpty, let firstProfile = profiles.first {
+                selectedExternalDiffToolID = firstProfile.id
+            }
         }
     }
 
@@ -302,7 +385,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     var canRefresh: Bool {
-        !normalizedRootInput.isEmpty && !isBusy
+        !normalizedRootInput.isEmpty && !isRefreshing && !isRefreshScheduled && !isRunningWorkspaceOperation
     }
 
     var canUpdateWorkingCopy: Bool {
@@ -321,6 +404,14 @@ final class WorkbenchModel: NSObject, ObservableObject {
         selectedEntries.contains(where: \.canCommit)
             && !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !isBusy
+    }
+
+    var canShelveSelected: Bool {
+        selectedEntries.contains(where: { $0.canCommit || $0.canRevert }) && !isBusy
+    }
+
+    var canUnshelve: Bool {
+        !normalizedRootInput.isEmpty && !isBusy
     }
 
     var canRevertSelected: Bool {
@@ -390,6 +481,14 @@ final class WorkbenchModel: NSObject, ObservableObject {
         statusNotice.text(using: localizer)
     }
 
+    var updateActivity: UpdateActivity? {
+        guard let key = currentUpdateActivityKey else {
+            return nil
+        }
+
+        return updateActivitiesByRoot[key]
+    }
+
     var localizer: MacSVNLocalizer {
         MacSVNLocalizer(language: language)
     }
@@ -413,7 +512,9 @@ final class WorkbenchModel: NSObject, ObservableObject {
         panel.canCreateDirectories = false
 
         if panel.runModal() == .OK, let url = panel.url {
-            rootPath = url.path
+            securityScopedBookmarkStore.saveBookmark(for: url)
+            rootPath = url.standardizedFileURL.path
+            broadcastCurrentMonitoredRoot()
         }
     }
 
@@ -460,7 +561,41 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     func refreshSnapshot(forceFullRefresh: Bool) {
+        guard canRefresh else {
+            diagnosticLog(
+                "refreshSnapshot ignored root=\(normalizedRootInput) forceFullRefresh=\(forceFullRefresh) " +
+                "isRefreshing=\(isRefreshing) isRefreshScheduled=\(isRefreshScheduled) " +
+                "isRunningWorkspaceOperation=\(isRunningWorkspaceOperation)"
+            )
+            return
+        }
+
         requestRefresh(forceFullRefresh: forceFullRefresh)
+    }
+
+    func showHistory() {
+        activeNavigation = .history
+        loadRecentHistoryIfNeeded()
+    }
+
+    func loadRecentHistoryIfNeeded() {
+        guard !isRecentHistoryRequestRunning, recentHistory.isEmpty, recentHistoryError == nil else {
+            return
+        }
+
+        refreshRecentHistory()
+    }
+
+    func refreshRecentHistory() {
+        guard !isRecentHistoryRequestRunning else {
+            return
+        }
+
+        isRecentHistoryRequestRunning = true
+        isLoadingRecentHistory = true
+        Task {
+            await performRefreshRecentHistory()
+        }
     }
 
     func toggleMonitoring() {
@@ -472,6 +607,121 @@ final class WorkbenchModel: NSObject, ObservableObject {
     func addSelected() {
         Task {
             await performAddSelected()
+        }
+    }
+
+    func shelveSelected() {
+        Task {
+            await performShelveSelected()
+        }
+    }
+
+    func unshelveNamedShelf() {
+        Task {
+            await performUnshelveNamedShelf()
+        }
+    }
+
+    func checkoutWorkingCopy() {
+        guard
+            let values = promptTextValues(
+                title: localizer.checkoutWorkingCopy,
+                fields: [
+                    TextPromptField(label: localizer.repositoryURLPrompt),
+                    TextPromptField(label: localizer.destinationPathPrompt),
+                ]
+            )
+        else {
+            return
+        }
+
+        Task {
+            await performCheckoutWorkingCopy(
+                repositoryURL: values[0],
+                destinationPath: values[1]
+            )
+        }
+    }
+
+    func importToRepository() {
+        guard
+            let values = promptTextValues(
+                title: localizer.importToRepository,
+                fields: [
+                    TextPromptField(label: localizer.sourcePathPrompt, value: normalizedRootInput),
+                    TextPromptField(label: localizer.repositoryURLPrompt),
+                    TextPromptField(label: localizer.importMessagePrompt),
+                ]
+            )
+        else {
+            return
+        }
+
+        Task {
+            await performImportToRepository(
+                sourcePath: values[0],
+                repositoryURL: values[1],
+                message: values[2]
+            )
+        }
+    }
+
+    func exportWorkingCopy() {
+        guard
+            let values = promptTextValues(
+                title: localizer.exportWorkingCopy,
+                fields: [
+                    TextPromptField(label: localizer.sourcePathPrompt, value: normalizedRootInput),
+                    TextPromptField(label: localizer.destinationPathPrompt),
+                ]
+            )
+        else {
+            return
+        }
+
+        Task {
+            await performExportWorkingCopy(
+                source: values[0],
+                destinationPath: values[1]
+            )
+        }
+    }
+
+    func switchWorkingCopy() {
+        guard
+            let values = promptTextValues(
+                title: localizer.switchWorkingCopy,
+                fields: [
+                    TextPromptField(label: localizer.repositoryURLPrompt),
+                ]
+            )
+        else {
+            return
+        }
+
+        Task {
+            await performSwitchWorkingCopy(repositoryURL: values[0])
+        }
+    }
+
+    func relocateWorkingCopy() {
+        guard
+            let values = promptTextValues(
+                title: localizer.relocateWorkingCopy,
+                fields: [
+                    TextPromptField(label: localizer.fromRepositoryURLPrompt, value: repositorySummary?.repositoryRootURL ?? ""),
+                    TextPromptField(label: localizer.toRepositoryURLPrompt),
+                ]
+            )
+        else {
+            return
+        }
+
+        Task {
+            await performRelocateWorkingCopy(
+                fromURL: values[0],
+                toURL: values[1]
+            )
         }
     }
 
@@ -555,7 +805,11 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     func showHistoryDetail(for revision: Int64) {
-        preferredDiffPreviewMode = .historyRevision
+        guard !(isLoadingHistoryDetail && selectedHistoryRevision == revision) else {
+            return
+        }
+
+        beginHistoryDetailRequest(for: revision, preferDiffPreview: true)
         Task {
             await loadHistoryDetail(for: revision)
         }
@@ -697,18 +951,32 @@ final class WorkbenchModel: NSObject, ObservableObject {
         }
 
         Task {
+            guard !isBusy else {
+                return
+            }
+
             do {
                 _ = try await configureServicesIfNeeded()
                 guard let client else {
                     throw WorkbenchError.notConfigured
                 }
+                guard let confirmation = confirmAddPreview(for: [entry]) else {
+                    return
+                }
+                guard !confirmation.paths.isEmpty else {
+                    lastError = localizer.selectUnversionedToAddError
+                    return
+                }
+
+                isRunningWorkspaceOperation = true
+                defer { isRunningWorkspaceOperation = false }
                 try await client.add(
-                    paths: [path],
-                    depth: .infinity,
+                    paths: confirmation.paths,
+                    depth: confirmation.depth,
                     force: false,
                     context: .foreground
                 )
-                statusNotice = .addedPaths(1)
+                statusNotice = .addedPaths(confirmation.paths.count)
                 lastError = nil
                 await enqueueRefresh(forceFullRefresh: true)
             } catch {
@@ -764,7 +1032,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                     }
                     let runner = ProcessSubversionRunner()
                     let request = SubversionCLIInvocationRequest(
-                        arguments: ["delete", "--force", path],
+                        arguments: ["delete", "--force", "--", path],
                         workingDirectory: normalizedRootInput
                     )
                     let result = try await runner.run(request)
@@ -790,7 +1058,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
 
                 let getRequest = SubversionCLIInvocationRequest(
-                    arguments: ["propget", "svn:ignore", parentDir],
+                    arguments: ["propget", "--", "svn:ignore", parentDir],
                     workingDirectory: normalizedRootInput
                 )
                 let getResult = try await runner.run(getRequest)
@@ -810,7 +1078,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 ignoreList += fileName + "\n"
 
                 let setRequest = SubversionCLIInvocationRequest(
-                    arguments: ["propset", "svn:ignore", ignoreList, parentDir],
+                    arguments: ["propset", "--", "svn:ignore", ignoreList, parentDir],
                     workingDirectory: normalizedRootInput
                 )
                 let setResult = try await runner.run(setRequest)
@@ -933,12 +1201,14 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
     func switchToBookmark(_ bookmark: WorkspaceBookmark) {
         rootPath = bookmark.path
+        clearLoadedEntries()
         var updated = bookmarks
         if let index = updated.firstIndex(where: { $0.id == bookmark.id }) {
             updated[index].lastAccessedAt = Date()
         }
         bookmarks = updated
         bookmarkStore.save(bookmarks)
+        broadcastCurrentMonitoredRoot()
         requestRefresh(forceFullRefresh: true)
     }
 
@@ -950,6 +1220,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
         let bookmark = WorkspaceBookmark(path: standardized)
         bookmarks.append(bookmark)
         bookmarkStore.save(bookmarks)
+        broadcastCurrentMonitoredRoot()
     }
 
     func addBookmarkFromPicker() {
@@ -959,6 +1230,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
         panel.allowsMultipleSelection = false
         panel.message = localizer.addWorkingCopyMessage
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        securityScopedBookmarkStore.saveBookmark(for: url)
         let standardized = url.standardizedFileURL.path
         guard !bookmarks.contains(where: { $0.path == standardized }) else {
             if let existing = bookmarks.first(where: { $0.path == standardized }) {
@@ -975,6 +1247,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     func removeBookmark(id: UUID) {
         bookmarks.removeAll { $0.id == id }
         bookmarkStore.save(bookmarks)
+        broadcastCurrentMonitoredRoot()
     }
 
     func reorderBookmarks(from source: IndexSet, to destination: Int) {
@@ -991,7 +1264,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     // MARK: - New SVN Operations
 
     func showLogForPath(_ path: String) {
-        activeNavigation = .history
+        showHistory()
     }
 
     func blamePath(_ path: String) {
@@ -1006,7 +1279,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["blame", "--xml", path],
+                    arguments: ["blame", "--xml", "--", path],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1029,7 +1302,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["lock", path],
+                    arguments: ["lock", "--", path],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1052,7 +1325,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["unlock", path],
+                    arguments: ["unlock", "--", path],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1088,7 +1361,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["move", sourcePath, destinationPath],
+                    arguments: ["move", "--", sourcePath, destinationPath],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1109,6 +1382,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
         panel.allowedContentTypes = [.init(filenameExtension: "patch")!]
         panel.nameFieldStringValue = "\((path as NSString).lastPathComponent).patch"
         guard panel.runModal() == .OK, let outputURL = panel.url else { return }
+        securityScopedBookmarkStore.saveBookmark(for: outputURL.deletingLastPathComponent())
 
         Task {
             do {
@@ -1116,7 +1390,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["diff", path],
+                    arguments: ["diff", "--", path],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1144,7 +1418,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["proplist", "-v", "--xml", path],
+                    arguments: ["proplist", "-v", "--xml", "--", path],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1167,7 +1441,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["propset", name, value, path],
+                    arguments: ["propset", "--", name, value, path],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1189,7 +1463,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 let runner = ProcessSubversionRunner()
                 let request = SubversionCLIInvocationRequest(
                     executablePath: "svn",
-                    arguments: ["propdel", name, path],
+                    arguments: ["propdel", "--", name, path],
                     workingDirectory: normalizedRootInput
                 )
                 let result = try await runner.run(request)
@@ -1206,6 +1480,25 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
     private var normalizedRootInput: String {
         rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var currentUpdateActivityKey: String? {
+        let root = normalizedRootInput
+        guard !root.isEmpty else {
+            return nil
+        }
+
+        return Self.standardizedPath(root)
+    }
+
+    private func setUpdateActivity(_ activity: UpdateActivity, for rootPath: String) {
+        var activities = updateActivitiesByRoot
+        activities[Self.standardizedPath(rootPath)] = activity
+        updateActivitiesByRoot = activities
+    }
+
+    private func updateActivityStartedAt(for rootPath: String) -> Date {
+        updateActivitiesByRoot[Self.standardizedPath(rootPath)]?.startedAt ?? Date()
     }
 
     private func copyRepositoryURL(_ urlString: String) {
@@ -1240,9 +1533,37 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     private func requestRefresh(forceFullRefresh: Bool) {
-        Task { [weak self] in
-            await self?.enqueueRefresh(forceFullRefresh: forceFullRefresh)
+        if isRefreshing {
+            hasQueuedRefresh = true
+            queuedRefreshNeedsFullRescan = queuedRefreshNeedsFullRescan || forceFullRefresh
+            diagnosticLog(
+                "performRefresh queued root=\(normalizedRootInput) forceFullRefresh=\(forceFullRefresh) " +
+                "queuedForceFullRefresh=\(queuedRefreshNeedsFullRescan)"
+            )
+            return
         }
+
+        if isRefreshScheduled {
+            scheduledRefreshNeedsFullRescan = scheduledRefreshNeedsFullRescan || forceFullRefresh
+            diagnosticLog(
+                "performRefresh merged scheduled request root=\(normalizedRootInput) forceFullRefresh=\(forceFullRefresh) " +
+                "scheduledForceFullRefresh=\(scheduledRefreshNeedsFullRescan)"
+            )
+            return
+        }
+
+        isRefreshScheduled = true
+        scheduledRefreshNeedsFullRescan = forceFullRefresh
+        Task { [weak self] in
+            await self?.runScheduledRefresh()
+        }
+    }
+
+    private func runScheduledRefresh() async {
+        let forceFullRefresh = scheduledRefreshNeedsFullRescan
+        scheduledRefreshNeedsFullRescan = false
+        isRefreshScheduled = false
+        await enqueueRefresh(forceFullRefresh: forceFullRefresh)
     }
 
     private func enqueueRefresh(forceFullRefresh: Bool) async {
@@ -1260,7 +1581,8 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     private func performRefresh(forceFullRefresh: Bool) async {
-        guard !normalizedRootInput.isEmpty else {
+        let requestedRootInput = normalizedRootInput
+        guard !requestedRootInput.isEmpty else {
             lastError = localizer.selectWorkingCopyFirstError
             statusNotice = .noWorkingCopySelected
             diagnosticLog("performRefresh skipped: empty root")
@@ -1269,6 +1591,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
         isRefreshing = true
         lastError = nil
+        var shouldPerformFinderUpdateAfterRefresh = false
         diagnosticLog(
             "performRefresh start root=\(normalizedRootInput) forceFullRefresh=\(forceFullRefresh) " +
             "pendingCommand=\(pendingWorkbenchCommand?.command.rawValue ?? "nil")"
@@ -1280,7 +1603,12 @@ final class WorkbenchModel: NSObject, ObservableObject {
             queuedRefreshNeedsFullRescan = false
             isRefreshing = false
 
-            if shouldRunQueuedRefresh {
+            if shouldPerformFinderUpdateAfterRefresh {
+                diagnosticLog("performRefresh launching deferred Finder update root=\(normalizedRootInput)")
+                Task { [weak self] in
+                    await self?.performUpdateWorkingCopy()
+                }
+            } else if shouldRunQueuedRefresh {
                 diagnosticLog(
                     "performRefresh draining queued refresh root=\(normalizedRootInput) " +
                     "forceFullRefresh=\(queuedForceFullRefresh)"
@@ -1295,20 +1623,34 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 throw WorkbenchError.notConfigured
             }
 
-            let snapshot = try await refreshSnapshotFromService(
-                rootPath: root,
-                forceFullRefresh: forceFullRefresh
+            let snapshot = try await withTimeout(seconds: 12) {
+                try await self.refreshSnapshotFromService(
+                    rootPath: root,
+                    forceFullRefresh: forceFullRefresh
+                )
+            }
+
+            let workingCopyItems = try await withTimeout(seconds: 12) {
+                try await client.status(
+                    at: root,
+                    options: .commitSheet,
+                    context: .foreground
+                )
+            }
+            let mergedWorkingCopyItems = workbenchStatusItems(
+                from: workingCopyItems,
+                snapshot: snapshot,
+                rootPath: root
             )
 
-            let workingCopyItems = try await client.status(
-                at: root,
-                options: .commitSheet,
-                context: .foreground
-            )
-            await refreshRepositoryInsights(rootPath: root)
+            guard isCurrentRoot(root) else {
+                diagnosticLog("performRefresh discarded stale status root=\(root) current=\(normalizedRootInput)")
+                requestRefresh(forceFullRefresh: forceFullRefresh)
+                return
+            }
 
             badgeEntryCount = snapshot.entries.count
-            let freshEntries = workbenchEntries(from: workingCopyItems, rootPath: root)
+            let freshEntries = workbenchEntries(from: mergedWorkingCopyItems, rootPath: root)
             applyLoadedEntries(freshEntries, rootPath: root)
             let appliedCommand = pendingWorkbenchCommand
             selectedPaths = selectionForFreshEntries(freshEntries, rootPath: root)
@@ -1319,6 +1661,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
                     for: appliedCommand,
                     selectedCount: selectedPaths.count
                 )
+                shouldPerformFinderUpdateAfterRefresh = appliedCommand.command == .updateWorkingCopy
             } else {
                 statusNotice = .loadedEntries(
                     entryCount: entries.count,
@@ -1326,10 +1669,14 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 )
             }
             diagnosticLog(
-                "performRefresh completed root=\(root) items=\(workingCopyItems.count) " +
+                "performRefresh completed root=\(root) items=\(mergedWorkingCopyItems.count) " +
                 "entries=\(entries.count) badges=\(badgeEntryCount) selected=\(selectedPaths.count) " +
                 "appliedCommand=\(appliedCommand?.command.rawValue ?? "nil")"
             )
+
+            Task { [weak self] in
+                await self?.refreshRepositoryInsightsIfCurrent(rootPath: root)
+            }
         } catch {
             lastError = localizedErrorMessage(for: error)
             statusNotice = .refreshFailed
@@ -1363,25 +1710,33 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     private func performAddSelected() async {
+        guard !isBusy else {
+            return
+        }
+
         do {
             _ = try await configureServicesIfNeeded()
             guard let client else {
                 throw WorkbenchError.notConfigured
             }
 
-            let addablePaths = selectedEntries.filter(\.canAdd).map(\.id)
-            guard !addablePaths.isEmpty else {
+            guard let confirmation = confirmAddPreview(for: selectedEntries) else {
+                return
+            }
+            guard !confirmation.paths.isEmpty else {
                 lastError = localizer.selectUnversionedToAddError
                 return
             }
 
+            isRunningWorkspaceOperation = true
+            defer { isRunningWorkspaceOperation = false }
             try await client.add(
-                paths: addablePaths,
-                depth: .infinity,
+                paths: confirmation.paths,
+                depth: confirmation.depth,
                 force: false,
                 context: .foreground
             )
-            statusNotice = .addedPaths(addablePaths.count)
+            statusNotice = .addedPaths(confirmation.paths.count)
             lastError = nil
             await enqueueRefresh(forceFullRefresh: true)
         } catch {
@@ -1390,13 +1745,422 @@ final class WorkbenchModel: NSObject, ObservableObject {
         }
     }
 
+    private func performShelveSelected() async {
+        guard !isBusy else {
+            return
+        }
+
+        let paths = collapsedPaths(selectedEntries.filter { $0.canCommit || $0.canRevert }.map(\.id))
+        guard !paths.isEmpty else {
+            lastError = localizer.selectModifiedToCommitError
+            return
+        }
+        guard let name = promptShelfName(
+            title: localizer.shelveNameTitle,
+            message: localizer.shelveNamePrompt,
+            actionTitle: localizer.shelveConfirmButton,
+            defaultName: defaultShelfName()
+        ) else {
+            return
+        }
+
+        do {
+            _ = try await configureServicesIfNeeded()
+            guard let client else {
+                throw WorkbenchError.notConfigured
+            }
+
+            isRunningWorkspaceOperation = true
+            defer { isRunningWorkspaceOperation = false }
+            try await client.shelve(paths: paths, name: name, context: .foreground)
+            lastError = nil
+            statusNotice = .shelvedPaths(pathCount: paths.count, name: name)
+            await enqueueRefresh(forceFullRefresh: true)
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .shelveFailed
+        }
+    }
+
+    private func performUnshelveNamedShelf() async {
+        guard !isBusy else {
+            return
+        }
+        guard let name = promptShelfName(
+            title: localizer.unshelveSelected,
+            message: localizer.unshelveNamePrompt,
+            actionTitle: localizer.unshelveConfirmButton,
+            defaultName: "shelf"
+        ) else {
+            return
+        }
+
+        do {
+            _ = try await configureServicesIfNeeded()
+            guard let client else {
+                throw WorkbenchError.notConfigured
+            }
+
+            isRunningWorkspaceOperation = true
+            defer { isRunningWorkspaceOperation = false }
+            try await client.unshelve(name: name, context: .foreground)
+            lastError = nil
+            statusNotice = .unshelved(name)
+            await enqueueRefresh(forceFullRefresh: true)
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .unshelveFailed
+        }
+    }
+
+    private func performCheckoutWorkingCopy(repositoryURL: String, destinationPath: String) async {
+        let repositoryURL = repositoryURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let destinationPath = Self.standardizedPath(destinationPath.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !isBusy, !repositoryURL.isEmpty, !destinationPath.isEmpty else {
+            return
+        }
+
+        isRunningWorkspaceOperation = true
+        statusNotice = .checkingOutWorkingCopy
+        defer { isRunningWorkspaceOperation = false }
+
+        do {
+            let checkoutOperator = SubversionWorkspaceOperator()
+            let result = try await checkoutOperator.checkout(
+                repositoryURL: repositoryURL,
+                destinationPath: destinationPath,
+                context: .foreground
+            )
+            securityScopedBookmarkStore.saveBookmark(for: URL(fileURLWithPath: destinationPath))
+            rootPath = destinationPath
+            lastError = nil
+            statusNotice = .checkedOutWorkingCopy(path: destinationPath, revision: result.revision)
+            await enqueueRefresh(forceFullRefresh: true)
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .checkoutFailed
+        }
+    }
+
+    private func performImportToRepository(sourcePath: String, repositoryURL: String, message: String) async {
+        let sourcePath = Self.standardizedPath(sourcePath.trimmingCharacters(in: .whitespacesAndNewlines))
+        let repositoryURL = repositoryURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isBusy, !sourcePath.isEmpty, !repositoryURL.isEmpty, !message.isEmpty else {
+            return
+        }
+
+        isRunningWorkspaceOperation = true
+        statusNotice = .importingPath
+        defer { isRunningWorkspaceOperation = false }
+
+        do {
+            let importOperator = SubversionWorkspaceOperator()
+            let result = try await importOperator.importPath(
+                sourcePath: sourcePath,
+                repositoryURL: repositoryURL,
+                message: message,
+                context: .foreground
+            )
+            lastError = nil
+            statusNotice = .importedPath(revision: result.revision)
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .importFailed
+        }
+    }
+
+    private func performExportWorkingCopy(source: String, destinationPath: String) async {
+        let source = Self.standardizedPath(source.trimmingCharacters(in: .whitespacesAndNewlines))
+        let destinationPath = Self.standardizedPath(destinationPath.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !isBusy, !source.isEmpty, !destinationPath.isEmpty else {
+            return
+        }
+
+        isRunningWorkspaceOperation = true
+        statusNotice = .exportingWorkingCopy
+        defer { isRunningWorkspaceOperation = false }
+
+        do {
+            let exportOperator = SubversionWorkspaceOperator()
+            let result = try await exportOperator.export(
+                source: source,
+                destinationPath: destinationPath,
+                context: .foreground
+            )
+            securityScopedBookmarkStore.saveBookmark(for: URL(fileURLWithPath: destinationPath).deletingLastPathComponent())
+            lastError = nil
+            statusNotice = .exportedWorkingCopy(path: result.destinationPath)
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .exportFailed
+        }
+    }
+
+    private func performSwitchWorkingCopy(repositoryURL: String) async {
+        let repositoryURL = repositoryURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isBusy, !repositoryURL.isEmpty else {
+            return
+        }
+
+        isRunningWorkspaceOperation = true
+        statusNotice = .switchingWorkingCopy
+        defer { isRunningWorkspaceOperation = false }
+
+        do {
+            let root = try await configureServicesIfNeeded()
+            guard let workspaceOperator else {
+                throw WorkbenchError.notConfigured
+            }
+            let result = try await workspaceOperator.switchWorkingCopy(
+                workingCopyPath: root,
+                repositoryURL: repositoryURL,
+                context: .foreground
+            )
+            lastError = nil
+            statusNotice = .switchedWorkingCopy(revision: result.revision)
+            await enqueueRefresh(forceFullRefresh: true)
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .switchFailed
+        }
+    }
+
+    private func performRelocateWorkingCopy(fromURL: String, toURL: String) async {
+        let fromURL = fromURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toURL = toURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isBusy, !fromURL.isEmpty, !toURL.isEmpty else {
+            return
+        }
+
+        isRunningWorkspaceOperation = true
+        statusNotice = .relocatingWorkingCopy
+        defer { isRunningWorkspaceOperation = false }
+
+        do {
+            let root = try await configureServicesIfNeeded()
+            guard let workspaceOperator else {
+                throw WorkbenchError.notConfigured
+            }
+            _ = try await workspaceOperator.relocate(
+                workingCopyPath: root,
+                fromURL: fromURL,
+                toURL: toURL,
+                context: .foreground
+            )
+            lastError = nil
+            statusNotice = .relocatedWorkingCopy
+            await enqueueRefresh(forceFullRefresh: true)
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .relocateFailed
+        }
+    }
+
+    private func promptShelfName(
+        title: String,
+        message: String,
+        actionTitle: String,
+        defaultName: String
+    ) -> String? {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: actionTitle)
+        alert.addButton(withTitle: localizer.addPreviewCancelButton)
+
+        let textField = NSTextField(string: defaultName)
+        textField.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        alert.accessoryView = textField
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+        let name = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    private func promptTextValues(title: String, fields: [TextPromptField]) -> [String]? {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.addButton(withTitle: localizer.runButtonTitle)
+        alert.addButton(withTitle: localizer.cancelTitle)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let textFields = fields.map { field in
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 8
+
+            let label = NSTextField(labelWithString: field.label)
+            label.font = .systemFont(ofSize: 12, weight: .medium)
+            label.widthAnchor.constraint(equalToConstant: 132).isActive = true
+
+            let textField = NSTextField(string: field.value)
+            textField.font = .systemFont(ofSize: 12)
+            textField.widthAnchor.constraint(equalToConstant: 360).isActive = true
+
+            row.addArrangedSubview(label)
+            row.addArrangedSubview(textField)
+            stack.addArrangedSubview(row)
+            return textField
+        }
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: max(34, fields.count * 34)))
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+        ])
+        alert.accessoryView = container
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        let values = textFields.map { $0.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard values.allSatisfy({ !$0.isEmpty }) else {
+            lastError = localizer.invalidWorkingCopyRoot
+            return nil
+        }
+
+        return values
+    }
+
+    private func defaultShelfName() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "shelf-\(formatter.string(from: Date()))"
+    }
+
+    private func confirmAddPreview(for candidates: [Entry]) -> AddPreviewConfirmation? {
+        let addableEntries = candidates.filter(\.canAdd)
+        let skippedEntries = candidates.filter { !$0.canAdd }
+        let directoryEntries = addableEntries.filter(\.isDirectory)
+        let addablePaths = addableEntries.map(\.id).sorted()
+        guard !addablePaths.isEmpty else {
+            return nil
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = localizer.addPreviewTitle
+        alert.informativeText = localizer.addPreviewMessage(
+            addableCount: addableEntries.count,
+            skippedCount: skippedEntries.count,
+            directoryCount: directoryEntries.count
+        )
+        alert.addButton(withTitle: localizer.addPreviewConfirmButton)
+        alert.addButton(withTitle: localizer.addPreviewCancelButton)
+
+        let depthPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let depths: [SVNDepth] = [.empty, .files, .immediates, .infinity]
+        for depth in depths {
+            depthPopup.addItem(withTitle: localizer.svnDepthTitle(depth))
+        }
+        depthPopup.selectItem(at: 1)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let depthRow = NSStackView()
+        depthRow.orientation = .horizontal
+        depthRow.alignment = .centerY
+        depthRow.spacing = 8
+        depthRow.addArrangedSubview(Self.dialogLabel(localizer.addPreviewDepthTitle))
+        depthRow.addArrangedSubview(depthPopup)
+        stack.addArrangedSubview(depthRow)
+
+        stack.addArrangedSubview(Self.dialogLabel(
+            previewSectionText(title: localizer.addPreviewAddableTitle, entries: addableEntries)
+        ))
+        if !directoryEntries.isEmpty {
+            stack.addArrangedSubview(Self.dialogLabel(
+                previewSectionText(title: localizer.addPreviewDirectoriesTitle, entries: directoryEntries)
+            ))
+        }
+        if !skippedEntries.isEmpty {
+            stack.addArrangedSubview(Self.dialogLabel(
+                previewSectionText(title: localizer.addPreviewSkippedTitle, entries: skippedEntries)
+            ))
+        }
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 1))
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            depthPopup.widthAnchor.constraint(equalToConstant: 160),
+        ])
+        alert.accessoryView = container
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        let selectedDepth = depths[max(0, min(depthPopup.indexOfSelectedItem, depths.count - 1))]
+        return AddPreviewConfirmation(paths: addablePaths, depth: selectedDepth)
+    }
+
+    private func previewSectionText(title: String, entries: [Entry]) -> String {
+        let visible = entries.prefix(10).map { "• \($0.relativePath)" }
+        let extraCount = max(0, entries.count - visible.count)
+        let suffix = extraCount > 0 ? "\n… +\(extraCount)" : ""
+        return ([title] + visible).joined(separator: "\n") + suffix
+    }
+
+    private static func dialogLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        label.maximumNumberOfLines = 12
+        return label
+    }
+
     private func performUpdateWorkingCopy() async {
         guard !isBusy else {
             return
         }
 
+        let requestedRoot = normalizedRootInput
+        guard !requestedRoot.isEmpty else {
+            lastError = localizer.selectWorkingCopyFirstError
+            statusNotice = .noWorkingCopySelected
+            return
+        }
+
         isRunningWorkspaceOperation = true
         statusNotice = .updatingWorkingCopy
+        setUpdateActivity(
+            UpdateActivity(
+                state: .running,
+                rootPath: Self.standardizedPath(requestedRoot),
+                displayPaths: [],
+                revision: nil,
+                hasConflicts: false,
+                startedAt: Date(),
+                completedAt: nil,
+                rawOutput: ""
+            ),
+            for: requestedRoot
+        )
+        defer { isRunningWorkspaceOperation = false }
 
         do {
             let root = try await configureServicesIfNeeded()
@@ -1414,12 +2178,36 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 revision: result.resultingRevision,
                 hasConflicts: result.hasConflicts
             )
-            isRunningWorkspaceOperation = false
+            setUpdateActivity(
+                UpdateActivity(
+                    state: .completed,
+                    rootPath: root,
+                    displayPaths: displayPathsForUpdate(result.updatedPaths, rootPath: root),
+                    revision: result.resultingRevision,
+                    hasConflicts: result.hasConflicts,
+                    startedAt: updateActivityStartedAt(for: root),
+                    completedAt: Date(),
+                    rawOutput: result.rawOutput
+                ),
+                for: root
+            )
             await enqueueRefresh(forceFullRefresh: true)
         } catch {
-            isRunningWorkspaceOperation = false
             lastError = localizedErrorMessage(for: error)
             statusNotice = .updateFailed
+            setUpdateActivity(
+                UpdateActivity(
+                    state: .failed(lastError ?? localizer.updateFailed),
+                    rootPath: Self.standardizedPath(requestedRoot),
+                    displayPaths: [],
+                    revision: nil,
+                    hasConflicts: false,
+                    startedAt: updateActivityStartedAt(for: requestedRoot),
+                    completedAt: Date(),
+                    rawOutput: ""
+                ),
+                for: requestedRoot
+            )
         }
     }
 
@@ -1430,6 +2218,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
         isRunningWorkspaceOperation = true
         statusNotice = .cleaningWorkingCopy
+        defer { isRunningWorkspaceOperation = false }
 
         do {
             let root = try await configureServicesIfNeeded()
@@ -1443,10 +2232,8 @@ final class WorkbenchModel: NSObject, ObservableObject {
             )
             lastError = nil
             statusNotice = .cleanedWorkingCopy
-            isRunningWorkspaceOperation = false
             await enqueueRefresh(forceFullRefresh: true)
         } catch {
-            isRunningWorkspaceOperation = false
             lastError = localizedErrorMessage(for: error)
             statusNotice = .cleanupFailed
         }
@@ -1459,6 +2246,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
         isRunningWorkspaceOperation = true
         statusNotice = .revertingPaths(pathCount: paths.count)
+        defer { isRunningWorkspaceOperation = false }
 
         do {
             _ = try await configureServicesIfNeeded()
@@ -1472,10 +2260,8 @@ final class WorkbenchModel: NSObject, ObservableObject {
             )
             lastError = nil
             statusNotice = .revertedPaths(result.revertedPaths.count)
-            isRunningWorkspaceOperation = false
             await enqueueRefresh(forceFullRefresh: true)
         } catch {
-            isRunningWorkspaceOperation = false
             lastError = localizedErrorMessage(for: error)
             statusNotice = .revertFailed
         }
@@ -1488,6 +2274,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
         isRunningWorkspaceOperation = true
         statusNotice = .resolvingPaths(pathCount: paths.count)
+        defer { isRunningWorkspaceOperation = false }
 
         do {
             _ = try await configureServicesIfNeeded()
@@ -1502,16 +2289,18 @@ final class WorkbenchModel: NSObject, ObservableObject {
             )
             lastError = nil
             statusNotice = .resolvedPaths(result.resolvedPaths.count)
-            isRunningWorkspaceOperation = false
             await enqueueRefresh(forceFullRefresh: true)
         } catch {
-            isRunningWorkspaceOperation = false
             lastError = localizedErrorMessage(for: error)
             statusNotice = .resolveFailed
         }
     }
 
     private func performCommitSelected() async {
+        guard !isBusy else {
+            return
+        }
+
         do {
             _ = try await configureServicesIfNeeded()
             guard let client else {
@@ -1539,6 +2328,9 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 return
             }
 
+            isRunningWorkspaceOperation = true
+            defer { isRunningWorkspaceOperation = false }
+
             let revision = try await client.commit(
                 candidates: candidates,
                 message: message,
@@ -1565,6 +2357,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
             throw WorkbenchError.invalidWorkingCopyRoot
         }
         let root = URL(fileURLWithPath: rawRoot).standardizedFileURL.path
+        updateSecurityScopedRootAccess(for: root)
 
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: root, isDirectory: &isDirectory) else {
@@ -1589,7 +2382,27 @@ final class WorkbenchModel: NSObject, ObservableObject {
             isMonitoring = false
         }
 
-        let baseConfiguration = runtimePaths.statusServiceConfiguration(repositoryRoot: root)
+        let defaultConfiguration = runtimePaths.statusServiceConfiguration(repositoryRoot: root)
+        let statusCenterConfiguration = StatusCenterConfiguration(
+            fullRefreshDebounceSeconds: defaultConfiguration.statusCenterConfiguration.fullRefreshDebounceSeconds,
+            changedPathBatchSize: maxIncrementalDirtyPaths,
+            badgeEntryLimit: badgeEntryLimit,
+            maxConcurrentRoots: maxConcurrentOperations
+        )
+        let clientConfiguration = SVNClientConfiguration(
+            preferredBackend: backendMode.svnBackendKind,
+            preserveModificationTimes: preserveModificationTimes,
+            maxConcurrentOperations: maxConcurrentOperations,
+            enableLargeWorkingCopyOptimizations: true
+        )
+        let baseConfiguration = StatusServiceConfiguration(
+            repositoryRoot: root,
+            databaseURL: defaultConfiguration.databaseURL,
+            maxIncrementalDirtyPaths: maxIncrementalDirtyPaths,
+            bridgeConfiguration: defaultConfiguration.bridgeConfiguration,
+            clientConfiguration: clientConfiguration,
+            statusCenterConfiguration: statusCenterConfiguration
+        )
 
         if runtimePaths.hasBundledStatusService {
             host = nil
@@ -1607,7 +2420,6 @@ final class WorkbenchModel: NSObject, ObservableObject {
         workspaceOperator = SubversionWorkspaceOperator()
         repositoryInspector = SubversionRepositoryInspector()
         diffInspector = SubversionDiffInspector()
-        UserDefaults.standard.set(root, forKey: Self.lastWorkingCopyDefaultsKey)
         broadcastCurrentMonitoredRoot()
         configuredRootPath = root
         badgeEntryCount = 0
@@ -1668,6 +2480,36 @@ final class WorkbenchModel: NSObject, ObservableObject {
         return error.localizedDescription
     }
 
+    private nonisolated func withTimeout<T: Sendable>(
+        seconds: UInt64,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                throw WorkbenchError.operationFailed("操作超时，请稍后重试。")
+            }
+
+            guard let result = try await group.next() else {
+                throw WorkbenchError.operationFailed("操作超时，请稍后重试。")
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private func refreshRepositoryInsightsIfCurrent(rootPath: String) async {
+        guard isCurrentRoot(rootPath) else {
+            diagnosticLog("refreshRepositoryInsights skipped stale root=\(rootPath) current=\(normalizedRootInput)")
+            return
+        }
+
+        await refreshRepositoryInsights(rootPath: rootPath)
+    }
+
     private func refreshRepositoryInsights(rootPath: String) async {
         guard let repositoryInspector else {
             repositorySummary = nil
@@ -1679,6 +2521,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
             clearRepositoryBrowserFilePreview()
             recentHistory = []
             recentHistoryError = nil
+            isLoadingRecentHistory = false
             selectedHistoryRevision = nil
             selectedHistoryEntryDetail = nil
             isLoadingHistoryDetail = false
@@ -1713,12 +2556,14 @@ final class WorkbenchModel: NSObject, ObservableObject {
             clearRepositoryBrowserFilePreview()
             recentHistory = []
             recentHistoryError = nil
+            isLoadingRecentHistory = false
             selectedHistoryRevision = nil
             selectedHistoryEntryDetail = nil
             isLoadingHistoryDetail = false
             return
         }
 
+        isLoadingRecentHistory = true
         do {
             diagnosticLog("refreshRepositoryInsights history request rootPath=\(rootPath)")
             let history = try await repositoryInspector.recentHistory(
@@ -1726,9 +2571,12 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 limit: 8,
                 context: .foreground
             )
-            diagnosticLog("refreshRepositoryInsights history loaded rootPath=\(rootPath) revisions=\(history.map(\\.revision))")
+            diagnosticLog(
+                "refreshRepositoryInsights history loaded rootPath=\(rootPath) revisions=\(history.map { $0.revision })"
+            )
             recentHistory = history
             recentHistoryError = nil
+            isLoadingRecentHistory = false
 
             guard !history.isEmpty else {
                 selectedHistoryRevision = nil
@@ -1742,26 +2590,67 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 : history.first?.revision
 
             if let preferredRevision {
-                selectedHistoryRevision = preferredRevision
-                isLoadingHistoryDetail = true
-                do {
-                    diagnosticLog("refreshRepositoryInsights detail request rootPath=\(rootPath) revision=\(preferredRevision)")
-                    selectedHistoryEntryDetail = try await repositoryInspector.logDetail(
-                        at: rootPath,
-                        revision: preferredRevision,
-                        context: .foreground
-                    )
-                    diagnosticLog("refreshRepositoryInsights detail loaded rootPath=\(rootPath) revision=\(preferredRevision) changedPaths=\(selectedHistoryEntryDetail?.changedPaths.count ?? 0)")
-                } catch {
-                    selectedHistoryEntryDetail = nil
-                    diagnosticLog("refreshRepositoryInsights detail failed rootPath=\(rootPath) revision=\(preferredRevision) error=\(error.localizedDescription)")
-                }
-                isLoadingHistoryDetail = false
+                beginHistoryDetailRequest(for: preferredRevision, preferDiffPreview: false)
+                await loadHistoryDetail(for: preferredRevision)
             }
         } catch {
             diagnosticLog("refreshRepositoryInsights history failed error=\(error.localizedDescription)")
             recentHistory = []
             recentHistoryError = localizedErrorMessage(for: error)
+            isLoadingRecentHistory = false
+            selectedHistoryRevision = nil
+            selectedHistoryEntryDetail = nil
+            isLoadingHistoryDetail = false
+        }
+    }
+
+    private func performRefreshRecentHistory() async {
+        guard isRecentHistoryRequestRunning else {
+            return
+        }
+
+        do {
+            let root = try await configureServicesIfNeeded()
+            guard let repositoryInspector else {
+                throw WorkbenchError.notConfigured
+            }
+
+            isLoadingRecentHistory = true
+            recentHistoryError = nil
+            diagnosticLog("refreshRecentHistory request rootPath=\(root)")
+            let history = try await repositoryInspector.recentHistory(
+                at: root,
+                limit: 8,
+                context: .foreground
+            )
+            diagnosticLog(
+                "refreshRecentHistory loaded rootPath=\(root) revisions=\(history.map { $0.revision })"
+            )
+            recentHistory = history
+            isLoadingRecentHistory = false
+            isRecentHistoryRequestRunning = false
+
+            guard !history.isEmpty else {
+                selectedHistoryRevision = nil
+                selectedHistoryEntryDetail = nil
+                isLoadingHistoryDetail = false
+                return
+            }
+
+            let preferredRevision = history.contains { $0.revision == selectedHistoryRevision }
+                ? selectedHistoryRevision
+                : history.first?.revision
+
+            if let preferredRevision {
+                beginHistoryDetailRequest(for: preferredRevision, preferDiffPreview: false)
+                await loadHistoryDetail(for: preferredRevision)
+            }
+        } catch {
+            diagnosticLog("refreshRecentHistory failed error=\(error.localizedDescription)")
+            recentHistory = []
+            recentHistoryError = localizedErrorMessage(for: error)
+            isLoadingRecentHistory = false
+            isRecentHistoryRequestRunning = false
             selectedHistoryRevision = nil
             selectedHistoryEntryDetail = nil
             isLoadingHistoryDetail = false
@@ -1825,12 +2714,18 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
     private func loadHistoryDetail(for revision: Int64) async {
         guard let repositoryInspector else {
+            finishHistoryDetailRequest(for: revision)
             return
         }
 
         let fallbackRoot = normalizedRootInput
         let root = configuredRootPath ?? (fallbackRoot.isEmpty ? "" : Self.standardizedPath(fallbackRoot))
         guard !root.isEmpty else {
+            finishHistoryDetailRequest(for: revision)
+            return
+        }
+
+        guard historyDetailRequestRevision == revision else {
             return
         }
 
@@ -1839,16 +2734,44 @@ final class WorkbenchModel: NSObject, ObservableObject {
         refreshDiffPreview(forceReload: true)
         do {
             diagnosticLog("loadHistoryDetail request root=\(root) revision=\(revision)")
-            selectedHistoryEntryDetail = try await repositoryInspector.logDetail(
+            let detail = try await repositoryInspector.logDetail(
                 at: root,
                 revision: revision,
                 context: .foreground
             )
-            diagnosticLog("loadHistoryDetail loaded root=\(root) revision=\(revision) changedPaths=\(selectedHistoryEntryDetail?.changedPaths.count ?? 0)")
+            guard historyDetailRequestRevision == revision else {
+                return
+            }
+
+            selectedHistoryEntryDetail = detail
+            diagnosticLog("loadHistoryDetail loaded root=\(root) revision=\(revision) changedPaths=\(detail.changedPaths.count)")
         } catch {
+            guard historyDetailRequestRevision == revision else {
+                return
+            }
+
             selectedHistoryEntryDetail = nil
             diagnosticLog("loadHistoryDetail failed root=\(root) revision=\(revision) error=\(error.localizedDescription)")
         }
+        finishHistoryDetailRequest(for: revision)
+    }
+
+    private func beginHistoryDetailRequest(for revision: Int64, preferDiffPreview: Bool) {
+        selectedHistoryRevision = revision
+        selectedHistoryEntryDetail = nil
+        historyDetailRequestRevision = revision
+        isLoadingHistoryDetail = true
+        if preferDiffPreview {
+            preferredDiffPreviewMode = .historyRevision
+        }
+    }
+
+    private func finishHistoryDetailRequest(for revision: Int64) {
+        guard historyDetailRequestRevision == revision else {
+            return
+        }
+
+        historyDetailRequestRevision = nil
         isLoadingHistoryDetail = false
     }
 
@@ -2228,6 +3151,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
         clearRepositoryBrowserFilePreview()
         recentHistory = []
         recentHistoryError = nil
+        isLoadingRecentHistory = false
         selectedHistoryRevision = nil
         selectedHistoryEntryDetail = nil
         isLoadingHistoryDetail = false
@@ -2257,7 +3181,20 @@ final class WorkbenchModel: NSObject, ObservableObject {
         var prefs = visibilityPrefs
         prefs.defaultWindowPreset = defaultWindowPreset
         prefs.hideDiffPreviewInCompactWindow = hideDiffPreviewInCompactWindow
+        prefs.backendMode = backendMode
+        prefs.preserveModificationTimes = preserveModificationTimes
+        prefs.maxConcurrentOperations = maxConcurrentOperations
+        prefs.badgeEntryLimit = badgeEntryLimit
+        prefs.maxIncrementalDirtyPaths = maxIncrementalDirtyPaths
+        prefs.selectedExternalDiffToolID = selectedExternalDiffToolID
         presentationPreferencesStore.save(prefs)
+    }
+
+    private func resetConfiguredServicesForPreferenceChange() {
+        host = nil
+        xpcClient = nil
+        client = nil
+        configuredRootPath = nil
     }
 
     private func workbenchEntries(from items: [WorkingCopyItem], rootPath: String) -> [Entry] {
@@ -2280,6 +3217,35 @@ final class WorkbenchModel: NSObject, ObservableObject {
                     relativePath: Self.relativePath(for: $0.path, rootPath: rootPath)
                 )
             }
+    }
+
+    private func workbenchStatusItems(
+        from statusItems: [WorkingCopyItem],
+        snapshot: BadgeSnapshot,
+        rootPath: String
+    ) -> [WorkingCopyItem] {
+        var itemsByPath = Dictionary(uniqueKeysWithValues: statusItems.map { ($0.path, $0) })
+        var recoveredCount = 0
+
+        for (path, status) in snapshot.entries where itemsByPath[path] == nil {
+            var isDirectory: ObjCBool = false
+            FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+            itemsByPath[path] = WorkingCopyItem(
+                path: path,
+                isDirectory: isDirectory.boolValue,
+                status: status,
+                propertyModified: false
+            )
+            recoveredCount += 1
+        }
+
+        if recoveredCount > 0 {
+            diagnosticLog(
+                "performRefresh recovered \(recoveredCount) workbench items from snapshot root=\(rootPath)"
+            )
+        }
+
+        return Array(itemsByPath.values)
     }
 
     private func retainedSelection(for entries: [Entry]) -> Set<String> {
@@ -2351,16 +3317,66 @@ final class WorkbenchModel: NSObject, ObservableObject {
         return relative.isEmpty ? "." : relative
     }
 
+    private func displayPathsForUpdate(_ paths: [String], rootPath: String) -> [String] {
+        Array(Set(paths.map { path in
+            path.hasPrefix("/")
+                ? Self.relativePath(for: Self.standardizedPath(path), rootPath: rootPath)
+                : path
+        })).sorted { lhs, rhs in
+            lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+    }
+
     private static func standardizedPath(_ path: String) -> String {
         URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     private func broadcastCurrentMonitoredRoot() {
+        let roots = monitoredWorkspaceRoots(checkFileSystem: false)
+        monitoredRootsStore.saveRoots(roots)
+        diagnosticLog("broadcastMonitoredRoots count=\(roots.count) roots=\(roots.joined(separator: ","))")
+    }
+
+    private func monitoredWorkspaceRoots(checkFileSystem: Bool) -> [String] {
+        var roots = monitoredRootsStore.loadRoots()
+        roots.append(contentsOf: bookmarks.map(\.path))
         let trimmedRoot = rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedRoot.isEmpty else {
+        if !trimmedRoot.isEmpty {
+            roots.append(trimmedRoot)
+        }
+
+        let standardizedRoots = Set(roots.map(Self.standardizedPath))
+        guard checkFileSystem else {
+            return Array(standardizedRoots).sorted()
+        }
+
+        return Array(standardizedRoots.filter { path in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }).sorted()
+    }
+
+    private func isCurrentRoot(_ root: String) -> Bool {
+        let currentRoot = normalizedRootInput
+        guard !currentRoot.isEmpty else {
+            return false
+        }
+
+        return Self.standardizedPath(currentRoot) == Self.standardizedPath(root)
+    }
+
+    private func updateSecurityScopedRootAccess(for rootPath: String) {
+        if configuredRootPath != rootPath {
+            rootSecurityScopedAccess?.stop()
+            rootSecurityScopedAccess = nil
+        }
+
+        guard rootSecurityScopedAccess == nil else {
             return
         }
-        monitoredRootsStore.saveRoots([trimmedRoot])
+
+        rootSecurityScopedAccess = securityScopedBookmarkStore.startAccessing(path: rootPath)
     }
 
     @objc
@@ -2371,7 +3387,12 @@ final class WorkbenchModel: NSObject, ObservableObject {
     @objc
     private func handleWorkbenchCommandDidChange(_ notification: Notification) {
         diagnosticLog("handleWorkbenchCommandDidChange notification")
-        guard ingestPendingWorkbenchCommand(reason: "distributed-notification") != nil else {
+        guard let command = ingestPendingWorkbenchCommand(reason: "distributed-notification") else {
+            return
+        }
+        guard command.rootPath != nil else {
+            diagnosticLog("handleWorkbenchCommandDidChange skipped refresh for nil root command")
+            consumePendingWorkbenchCommandWithoutRefresh()
             return
         }
         requestRefresh(forceFullRefresh: true)
@@ -2380,16 +3401,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     @objc
     private func handleAppDidBecomeActive(_ notification: Notification) {
         diagnosticLog("handleAppDidBecomeActive")
-        if ingestPendingWorkbenchCommand(reason: "app-did-become-active") != nil {
-            requestRefresh(forceFullRefresh: true)
-            return
-        }
-
-        guard entries.isEmpty, !normalizedRootInput.isEmpty else {
-            return
-        }
-
-        requestRefresh(forceFullRefresh: false)
+        _ = ingestPendingWorkbenchCommand(reason: "app-did-become-active")
     }
 
     private func ingestPendingWorkbenchCommand(reason: String) -> MacSVNWorkbenchCommand? {
@@ -2423,11 +3435,23 @@ final class WorkbenchModel: NSObject, ObservableObject {
         return command
     }
 
+    private func consumePendingWorkbenchCommandWithoutRefresh() {
+        guard let pendingWorkbenchCommand else {
+            return
+        }
+
+        lastHandledWorkbenchCommandID = pendingWorkbenchCommand.id
+        self.pendingWorkbenchCommand = nil
+        workbenchCommandStore.clearCommand()
+    }
+
     private func finderReadyNotice(
         for command: MacSVNWorkbenchCommand,
         selectedCount: Int
     ) -> WorkbenchNotice {
         switch command.command {
+        case .updateWorkingCopy:
+            return .finderCommandReady(command: command.command, selectedCount: selectedCount)
         case .commitSelected:
             return .finderCommitReady(selectedCount: selectedCount)
         case .diffSelected:
@@ -2464,6 +3488,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     deinit {
+        rootSecurityScopedAccess?.stop()
         diffPreviewTask?.cancel()
         repositoryBrowserPreviewTask?.cancel()
         try? FileManager.default.removeItem(at: externalDiffArtifactsRootURL)

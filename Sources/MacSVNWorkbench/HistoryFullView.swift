@@ -17,13 +17,24 @@ struct HistoryFullView: View {
             Divider()
             content
         }
+        .background(.ultraThinMaterial)
         .background(CommitPalette.panelBackground)
         .clipShape(RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: CommitPalette.panelCornerRadius, style: .continuous)
-                .strokeBorder(CommitPalette.subtleBorder, lineWidth: 0.5)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [CommitPalette.glassHighlight, CommitPalette.panelBorder, Color.primary.opacity(0.10)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
-        .shadow(color: .black.opacity(0.06), radius: CommitPalette.panelShadowRadius, y: CommitPalette.panelShadowYOffset)
+        .shadow(color: .black.opacity(0.12), radius: CommitPalette.panelShadowRadius, y: CommitPalette.panelShadowYOffset)
+        .onAppear {
+            model.loadRecentHistoryIfNeeded()
+        }
     }
 
     private var header: some View {
@@ -36,10 +47,10 @@ struct HistoryFullView: View {
 
             ToolbarIconButton(
                 symbol: "arrow.clockwise",
-                title: localizer.repositoryBrowserPreviewLoading,
-                isEnabled: !model.isRefreshing
+                title: localizer.loadingRecentHistory,
+                isEnabled: !model.isLoadingRecentHistory
             ) {
-                model.refreshSnapshot(forceFullRefresh: true)
+                model.refreshRecentHistory()
             }
         }
         .padding(.horizontal, 18)
@@ -58,7 +69,18 @@ struct HistoryFullView: View {
 
     @ViewBuilder
     private var historyList: some View {
-        if let error = model.recentHistoryError {
+        if model.isLoadingRecentHistory {
+            VStack(spacing: 8) {
+                Spacer()
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text(localizer.loadingRecentHistory)
+                    .font(.system(size: 12))
+                    .foregroundStyle(CommitPalette.textMuted)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+        } else if let error = model.recentHistoryError {
             VStack {
                 Spacer()
                 Text(error)

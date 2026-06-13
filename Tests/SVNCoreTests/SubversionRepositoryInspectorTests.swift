@@ -65,7 +65,7 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
         XCTAssertEqual(summary.lastChangedAuthor, "alice")
         XCTAssertEqual(summary.workingCopyUUID, "1234-5678")
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].arguments, ["info", "--xml", "/repo/project"])
+        XCTAssertEqual(requests[0].arguments, ["info", "--xml", "--", "/repo/project"])
     }
 
     func testRecentHistoryParsesLogEntriesFromXML() async throws {
@@ -129,10 +129,10 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
         XCTAssertEqual(entries[1].author, "bob")
         XCTAssertEqual(entries[1].message, "")
         XCTAssertEqual(requests.count, 2)
-        XCTAssertEqual(requests[0].arguments, ["info", "--xml", "/repo/project"])
+        XCTAssertEqual(requests[0].arguments, ["info", "--xml", "--", "/repo/project"])
         XCTAssertEqual(
             requests[1].arguments,
-            ["log", "--xml", "-l", "2", "https://svn.example.com/repos/project/trunk"]
+            ["log", "--xml", "-l", "2", "--", "https://svn.example.com/repos/project/trunk"]
         )
         XCTAssertEqual(requests[1].workingDirectory, "/repo/project")
     }
@@ -167,7 +167,7 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(
             requests[0].arguments,
-            ["log", "--xml", "-l", "1", "https://svn.example.com/repos/project/trunk"]
+            ["log", "--xml", "-l", "1", "--", "https://svn.example.com/repos/project/trunk"]
         )
         XCTAssertNil(requests[0].workingDirectory)
     }
@@ -213,7 +213,7 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
         XCTAssertEqual(detail.changedPaths[1].path, "/branches/release")
         XCTAssertEqual(detail.changedPaths[1].action, "A")
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].arguments, ["log", "--xml", "-v", "-r", "128", "/repo/project"])
+        XCTAssertEqual(requests[0].arguments, ["log", "--xml", "-v", "-r", "128", "--", "/repo/project"])
     }
 
     func testBrowseParsesRepositoryListingFromXML() async throws {
@@ -263,7 +263,7 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
         XCTAssertEqual(listing.entries[1].author, "bob")
         XCTAssertEqual(listing.entries[1].fullURL, "https://svn.example.com/repos/project/trunk/README.md")
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].arguments, ["list", "--xml", "https://svn.example.com/repos/project/trunk"])
+        XCTAssertEqual(requests[0].arguments, ["list", "--xml", "--", "https://svn.example.com/repos/project/trunk"])
     }
 
     func testFileContentsUsesCatForRepositoryURL() async throws {
@@ -292,7 +292,7 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(
             requests[0].arguments,
-            ["cat", "https://svn.example.com/repos/project/trunk/README.md"]
+            ["cat", "--", "https://svn.example.com/repos/project/trunk/README.md"]
         )
     }
 
@@ -312,7 +312,7 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
 
         XCTAssertEqual(preview.text, "base\n")
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].arguments, ["cat", "-r", "BASE", "/repo/project/README.md"])
+        XCTAssertEqual(requests[0].arguments, ["cat", "-r", "BASE", "--", "/repo/project/README.md"])
         XCTAssertEqual(requests[0].workingDirectory, "/repo/project")
     }
 
@@ -334,7 +334,7 @@ final class SubversionRepositoryInspectorTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(
             requests[0].arguments,
-            ["export", "-r", "BASE", "/repo/project/Docs", "/tmp/export/Docs", "--force"]
+            ["export", "-r", "BASE", "--force", "--", "/repo/project/Docs", "/tmp/export/Docs"]
         )
         XCTAssertEqual(requests[0].workingDirectory, "/repo/project")
     }
