@@ -1,12 +1,105 @@
 # MacTortoiseSVN
 
-MacTortoiseSVN is a native macOS SVN client inspired by TortoiseSVN, but rebuilt around macOS app, extension, sandbox, and process-boundary constraints.
+<p align="center">
+  <img src="Docs/Assets/wechat-pay.png" alt="MacTortoiseSVN" width="120">
+</p>
 
-The project goal is not just to clone the Windows UI. It is to provide a fast standalone SVN workbench, thin Finder integration, cached badge status, and a service-oriented backend that can handle large working copies without making Finder do heavy work.
+<p align="center">
+  <strong>
+    <a href="#english">English</a> · <a href="#中文">中文</a>
+  </strong>
+</p>
+
+---
+
+# English
+
+A native macOS SVN client inspired by TortoiseSVN, rebuilt around macOS app, extension, sandbox, and process-boundary constraints.
+
+Not just a Windows UI clone — a fast standalone SVN workbench, thin Finder integration, cached badge status, and a service-oriented backend that handles large working copies without making Finder do heavy work.
 
 ## Download
 
 [Download Latest Release](https://github.com/MorningStar-Lu/MacMacTortoiseSVN/releases/latest)
+
+1. Download `MacTortoiseSVN.zip`, unzip and drag to `/Applications`
+2. Grant file access permission on first launch
+3. Enable Finder extension in **System Settings > Privacy & Security > Extensions**
+
+> Requires macOS 14+ and Xcode Command Line Tools (provides `svn`)
+
+## Features
+
+- **Standalone Workbench** — Native SwiftUI macOS client for commit, update, log, browse, diff
+- **Finder Integration** — Context menus (Commit / Add / Diff / Refresh) + status badges
+- **Status Service** — SQLite cache + FSEvents incremental refresh, never blocks Finder
+- **Rust Backend** — mtsvn-rs command bridge with safe svn invocation
+- **Security Hardened** — `--` option terminators, parameterized SQL, audit token validation
+- **Localization** — Chinese / English UI
+
+## Architecture
+
+```text
+MacTortoiseSVN.app          Finder Sync Extension (.appex)
+├── SwiftUI Workbench       ├── Badge reads from SQLite cache
+├── Commit / Add / Diff     ├── Context menu commands
+├── Status cache publish     └── App Group shared state
+└── SVNCore client
+
+StatusServiceHost            Rust Core (mtsvn-rs)
+├── FSEvents watcher         ├── svn_backend (command wrapper)
+├── SQLite badge cache       ├── status_engine (badge pipeline)
+└── Incremental refresh      └── Swift process bridge
+```
+
+## Build
+
+```sh
+# Rust tests
+cd rust && /opt/homebrew/bin/cargo test
+
+# Swift tests
+env HOME=$PWD/.tmp-home CLANG_MODULE_CACHE_PATH=$PWD/.build/ModuleCache.noindex \
+    SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/ModuleCache.noindex swift test
+
+# Build app bundle
+./scripts/build_workbench_app.sh
+
+# Install to /Applications
+./scripts/install_workbench_app.sh
+```
+
+## Remaining Work
+
+- Production signing and notarization
+- Larger-scale performance and stress testing
+- Native diff / merge UI
+- Broader SVN backend coverage
+- Stable IPC boundary between Swift and Rust
+
+## License
+
+Licensed under the **Apache License 3.0** — see [LICENSE](LICENSE).
+
+## Support
+
+If this project helps you, sponsorship is welcome.
+
+<p align="center">
+  <img src="Docs/Assets/wechat-pay.png" alt="WeChat Pay" width="360">
+</p>
+
+---
+
+# 中文
+
+受 TortoiseSVN 启发的原生 macOS SVN 客户端，围绕 macOS 应用、扩展、沙盒和进程边界约束重新设计。
+
+不只是 Windows UI 的克隆——快速的独立 SVN 工作台、轻量 Finder 集成、缓存状态 Badge、面向服务的后端，让大工作副本不会拖慢 Finder。
+
+## 下载
+
+[下载最新 Release](https://github.com/MorningStar-Lu/MacMacTortoiseSVN/releases/latest)
 
 1. 下载 `MacTortoiseSVN.zip`，解压后拖入 `/Applications`
 2. 首次打开需授权文件访问权限
@@ -14,253 +107,63 @@ The project goal is not just to clone the Windows UI. It is to provide a fast st
 
 > 需要 macOS 14+ 且已安装 Xcode Command Line Tools（提供 `svn`）
 
-## Feature tree
+## 功能特性
+
+- **独立工作台** — 原生 SwiftUI macOS 客户端，支持提交、更新、日志、仓库浏览、Diff
+- **Finder 集成** — 右键菜单（Commit / Add / Diff / Refresh）+ 状态 Badge
+- **状态服务** — SQLite 缓存 + FSEvents 增量刷新，不阻塞 Finder
+- **Rust 后端** — mtsvn-rs 命令桥，安全的 svn 命令调用
+- **安全加固** — `--` 选项终止符、参数化 SQL、审计令牌校验
+- **本地化** — 中文 / 英文界面
+
+## 架构
 
 ```text
-MacTortoiseSVN
-├── Standalone Workbench App
-│   ├── Native SwiftUI macOS interface
-│   ├── Working copy picker
-│   ├── Commit-oriented change list
-│   ├── Modified / unversioned / conflicted status display
-│   ├── Partial selection for commits
-│   ├── Commit message editor
-│   ├── Add selected paths
-│   ├── Update working copy
-│   ├── Revert / resolve / cleanup-oriented workflow hooks
-│   ├── Recent history and revision detail views
-│   ├── Repository browser surfaces
-│   ├── Property / blame / diff-related UI surfaces
-│   ├── External diff tool integration points
-│   ├── Window layout presets and compact mode
-│   └── Chinese / English localization foundation
-│
-├── Finder Integration
-│   ├── Finder Sync extension bundle
-│   ├── Context menu commands
-│   │   ├── Open in Workbench
-│   │   ├── Commit selected
-│   │   ├── Add selected
-│   │   ├── Diff selected
-│   │   └── Refresh now
-│   ├── Badge resolution from cached status snapshots
-│   ├── App Group shared command handoff
-│   ├── DistributedNotification refresh signaling
-│   └── Quick Actions fallback surface
-│
-├── Status Pipeline
-│   ├── StatusServiceHost service-layer core
-│   ├── SQLite-backed badge snapshot cache
-│   ├── Persistent dirty-path tracking
-│   ├── Incremental dirty refresh scheduling
-│   ├── Full-refresh promotion for noisy roots
-│   ├── FSEvents working-copy watcher
-│   ├── Cache location outside working copies
-│   └── Finder-safe constant-time badge reads
-│
-├── XPC / Process Boundaries
-│   ├── Bundled StatusService.xpc target
-│   ├── NSXPC protocol and client scaffold
-│   ├── Client validation foundation
-│   ├── Host app owns heavyweight workflow UI
-│   ├── Finder extension avoids recursive SVN scans
-│   └── Target path for app / extension / service separation
-│
-├── SVN Backend
-│   ├── SVNCore abstraction layer
-│   ├── Command-line svn compatibility backend
-│   ├── Rust process bridge through mtsvn-rs
-│   ├── status / snapshot bridge commands
-│   ├── add / commit bridge commands
-│   ├── XML-based svn log parsing
-│   ├── Process + arguments execution, no shell interpolation
-│   └── -- option terminators for positional SVN operands
-│
-├── Rust Phase 1 Core
-│   ├── rust/svn_backend typed command wrapper
-│   ├── rust/status_engine dirty-root and badge pipeline
-│   ├── mtsvn-rs verification CLI
-│   ├── Swift-to-Rust process bridge
-│   └── Future path toward stable IPC or lower-level bridge
-│
-├── Security / macOS Integration
-│   ├── App Group storage for app / extension shared state
-│   ├── Security-scoped bookmark storage for selected roots
-│   ├── FinderSync fails closed when App Group is unavailable
-│   ├── FinderSync opens SQLite cache read-only
-│   ├── Notification payloads are treated as signals, not trusted data
-│   ├── Stable hashed SQLite cache filenames
-│   ├── Sandboxed Finder extension boundary
-│   └── Signing-aware permission behavior documentation
-│
-├── Packaging
-│   ├── Local .app bundle assembly script
-│   ├── Embedded Rust helper binary
-│   ├── Embedded FinderSync .appex
-│   ├── Embedded StatusService .xpc
-│   ├── App icon generation script
-│   ├── Local codesign flow
-│   └── Install script for local testing
-│
-└── Tests
-    ├── Swift package unit tests
-    ├── StatusCenter tests
-    ├── StatusService SQLite and dirty-state tests
-    ├── SVNCore command construction tests
-    ├── FinderSyncBridge tests
-    ├── Real local-SVN integration tests
-    └── Rust cargo tests
+MacTortoiseSVN.app          Finder Sync 扩展 (.appex)
+├── SwiftUI 工作台           ├── 从 SQLite 缓存读取 Badge
+├── 提交 / 添加 / Diff       ├── 右键菜单命令
+├── 状态缓存发布              └── App Group 共享状态
+└── SVNCore 客户端
+
+StatusServiceHost            Rust 核心 (mtsvn-rs)
+├── FSEvents 监听器           ├── svn_backend（命令包装）
+├── SQLite Badge 缓存         ├── status_engine（Badge 管道）
+└── 增量刷新                  └── Swift 进程桥
 ```
 
-## Current architecture
-
-MacTortoiseSVN deliberately separates Finder-facing work from heavy SVN operations.
-
-```text
-Finder
-└── MacSVNFinderSync.appex
-    ├── Reads monitored roots from App Group storage
-    ├── Reads cached badge snapshots from App Group SQLite
-    ├── Sends refresh signals through DistributedNotification
-    └── Forwards commands to the standalone app
-
-MacTortoiseSVN.app
-├── SwiftUI Workbench UI
-├── Commit / add / update / diff workflows
-├── Finder command ingestion
-├── Security-scoped root access
-├── SVNCore client calls
-└── Status cache publishing
-
-StatusServiceHost / StatusService.xpc
-├── Owns refresh scheduling direction
-├── Maintains badge snapshots and dirty paths
-├── Uses FSEvents for working-copy invalidation
-├── Talks to SVNCore / Rust bridge
-└── Represents the target background-service boundary
-
-Rust Core
-├── svn_backend wraps command-line svn
-├── status_engine builds badge snapshots
-└── mtsvn-rs exposes bridge commands for Swift
-```
-
-### Current FinderSync data path
-
-Today, FinderSync does **not** directly depend on the XPC service for badge reads. The current implemented path is:
-
-```text
-MacTortoiseSVN.app / service side
-    └── writes badge snapshots and dirty state
-        └── App Group SQLite cache
-            └── FinderSync reads read-only snapshots
-```
-
-`DistributedNotification` is only a refresh signal. Notification payloads are not trusted as the source of monitored roots or badge state.
-
-### Target direction
-
-The long-term target is an authenticated app / extension / XPC service split where FinderSync asks a background status service for compact cached payloads, while the service owns refresh scheduling and cache writes.
-
-## Implemented highlights
-
-- Native standalone macOS workbench executable: `MacTortoiseSVN`.
-- Local app bundle packaging under `dist/MacTortoiseSVN.app`.
-- Finder Sync extension target and packaged `.appex`.
-- Quick Actions fallback target.
-- Bundled `StatusService.xpc` target and NSXPC protocol scaffold.
-- SQLite persistent status cache.
-- Read-only FinderSync status cache access.
-- FSEvents-backed working-copy watcher.
-- Rust-backed phase-one status bridge.
-- Command-line `svn` backend with argument-array execution.
-- Security hardening around SVN option injection.
-- Stable hashed cache filenames to avoid path collisions.
-- Security-scoped bookmark storage for user-selected working-copy roots.
-- Generated app icon and local signing flow.
-
-## Repository layout
-
-```text
-.
-├── Apps
-│   ├── MacSVNApp
-│   ├── MacSVNFinderSync
-│   ├── MacSVNQuickActions
-│   └── MacSVNStatusService
-├── Docs
-│   ├── Architecture.md
-│   ├── CompetitiveRequirements.md
-│   ├── RustPhase1.md
-│   ├── SECURITY_AUDIT.md
-│   └── Assets
-├── Sources
-│   ├── CoreTypes
-│   ├── FinderSyncBridge
-│   ├── IntegrationKit
-│   ├── MacSVNWorkbench
-│   ├── StatusCenter
-│   ├── StatusService
-│   ├── StatusServiceXPC
-│   └── SVNCore
-├── Tests
-├── rust
-├── scripts
-└── dist
-```
-
-## Build and verify
+## 构建
 
 ```sh
-# Rust tests
+# Rust 测试
 cd rust && /opt/homebrew/bin/cargo test
 
-# Swift package tests
-env \
-  HOME=$PWD/.tmp-home \
-  CLANG_MODULE_CACHE_PATH=$PWD/.build/ModuleCache.noindex \
-  SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/ModuleCache.noindex \
-  swift test
+# Swift 测试
+env HOME=$PWD/.tmp-home CLANG_MODULE_CACHE_PATH=$PWD/.build/ModuleCache.noindex \
+    SWIFTPM_MODULECACHE_OVERRIDE=$PWD/.build/ModuleCache.noindex swift test
 
-# Build local app bundle
+# 构建应用包
 ./scripts/build_workbench_app.sh
 
-# Install locally for testing
+# 安装到 /Applications
 ./scripts/install_workbench_app.sh
 ```
 
-The packaged app bundle is created at:
+## 待完成
 
-```text
-dist/MacTortoiseSVN.app
-```
+- 正式签名与公证
+- 大规模性能与压力测试
+- 原生 Diff / Merge 界面
+- 更完整的 SVN 后端覆盖
+- Swift 与 Rust 之间稳定的 IPC 边界
 
-## macOS permissions and signing
+## 开源协议
 
-macOS file permissions are tied to app identity. With ad-hoc signing, each rebuild can appear as a different app to TCC, which may cause repeated Desktop / Documents / Downloads permission prompts.
+本项目基于 **Apache License 3.0** 开源，详见 [LICENSE](LICENSE)。
 
-For stable local testing, use a stable Apple Development signing identity. For long-term distribution, use Developer ID Application signing plus notarization.
+## 支持项目
 
-The app also stores security-scoped bookmarks for user-selected working-copy roots so normal use can be closer to “choose once, reuse later.”
-
-## Remaining work
-
-- Production signing and notarization.
-- More complete release packaging outside local debug builds.
-- Larger-scale performance and stress testing.
-- Native diff / merge UI beyond external-tool integration.
-- Broader backend coverage for advanced SVN workflows.
-- Finalized stable IPC boundary between Swift and Rust / service layers.
-- Additional hardening review for XPC audit-token implementation and notarization compatibility.
-
-## License
-
-This project is licensed under the **Apache License 3.0** — see the [LICENSE](LICENSE) file for details.
-
-## Support the project
-
-If this project helps you, sponsorship is welcome.
+如果这个项目对你有帮助，欢迎赞助。
 
 <p align="center">
-  <img src="Docs/Assets/wechat-pay.png" alt="WeChat Pay QR Code" width="360">
+  <img src="Docs/Assets/wechat-pay.png" alt="微信支付" width="360">
 </p>
