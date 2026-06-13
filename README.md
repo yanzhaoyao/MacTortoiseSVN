@@ -4,6 +4,16 @@ MacTortoiseSVN is a native macOS SVN client inspired by TortoiseSVN, but rebuilt
 
 The project goal is not just to clone the Windows UI. It is to provide a fast standalone SVN workbench, thin Finder integration, cached badge status, and a service-oriented backend that can handle large working copies without making Finder do heavy work.
 
+## Download
+
+[Download Latest Release](https://github.com/MorningStar-Lu/MacMacTortoiseSVN/releases/latest)
+
+1. 下载 `MacTortoiseSVN.zip`，解压后拖入 `/Applications`
+2. 首次打开需授权文件访问权限
+3. Finder 扩展在 **系统设置 > 隐私与安全性 > 扩展** 中启用
+
+> 需要 macOS 14+ 且已安装 Xcode Command Line Tools（提供 `svn`）
+
 ## Feature tree
 
 ```text
