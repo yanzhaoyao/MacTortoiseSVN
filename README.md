@@ -20,7 +20,7 @@ Not just a Windows UI clone — a fast standalone SVN workbench, thin Finder int
 
 ## Download
 
-[Download Latest Release](https://github.com/MorningStar-Lu/MacMacTortoiseSVN/releases/latest)
+[Download Latest Release](https://github.com/MorningStar-Lu/MacTortoiseSVN/releases/latest)
 
 1. Download `MacTortoiseSVN.zip`, unzip and drag to `/Applications`
 2. Grant file access permission on first launch
@@ -100,7 +100,7 @@ If this project helps you, sponsorship is welcome.
 
 ## 下载
 
-[下载最新 Release](https://github.com/MorningStar-Lu/MacMacTortoiseSVN/releases/latest)
+[下载最新 Release](https://github.com/MorningStar-Lu/MacTortoiseSVN/releases/latest)
 
 1. 下载 `MacTortoiseSVN.zip`，解压后拖入 `/Applications`
 2. 首次打开需授权文件访问权限
