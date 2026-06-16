@@ -8,6 +8,7 @@ import StatusService
 import StatusServiceXPC
 import SVNCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class WorkbenchModel: NSObject, ObservableObject {
@@ -1351,8 +1352,28 @@ final class WorkbenchModel: NSObject, ObservableObject {
         guard let sourcePath = renameTargetPath else { return }
         let newName = renameNewName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !newName.isEmpty else { return }
+        // Reject names that could cause path traversal or option injection
+        guard !newName.hasPrefix("-") else {
+            lastError = "Name cannot start with '-'"
+            return
+        }
+        guard !newName.contains("..") else {
+            lastError = "Name cannot contain '..'"
+            return
+        }
+        guard !newName.contains("/") else {
+            lastError = "Name cannot contain '/'"
+            return
+        }
         let parentDir = (sourcePath as NSString).deletingLastPathComponent
         let destinationPath = (parentDir as NSString).appendingPathComponent(newName)
+        // Verify destination stays within the working copy root
+        let normalizedDest = URL(fileURLWithPath: destinationPath).standardizedFileURL.path
+        let normalizedRoot = normalizedRootInput
+        guard normalizedDest.hasPrefix(normalizedRoot + "/") || normalizedDest == normalizedRoot else {
+            lastError = "Destination path is outside the working copy"
+            return
+        }
         isRenamePresented = false
 
         Task {
@@ -1379,7 +1400,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
 
     func createPatchForPath(_ path: String) {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.init(filenameExtension: "patch")!]
+        panel.allowedContentTypes = [UTType(filenameExtension: "patch") ?? .data]
         panel.nameFieldStringValue = "\((path as NSString).lastPathComponent).patch"
         guard panel.runModal() == .OK, let outputURL = panel.url else { return }
         securityScopedBookmarkStore.saveBookmark(for: outputURL.deletingLastPathComponent())
@@ -3476,7 +3497,8 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 withIntermediateDirectories: true
             )
             if !FileManager.default.fileExists(atPath: logURL.path) {
-                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+                FileManager.default.createFile(atPath: logURL.path, contents: nil,
+                    attributes: [.posixPermissions: 0o600])
             }
             let handle = try FileHandle(forWritingTo: logURL)
             try handle.seekToEnd()

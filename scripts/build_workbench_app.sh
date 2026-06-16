@@ -49,6 +49,20 @@ if [[ "$CODESIGN_IDENTITY" == "-" ]]; then
     echo "warning: 建议安装 Apple Development 证书，或设置 MACSVN_CODESIGN_IDENTITY 指定稳定的签名身份。" >&2
 fi
 
+# Strip get-task-allow from entitlements for codesigning.
+# This prevents debug-attach and avoids TCC re-prompting on ad-hoc signed builds.
+strip_get_task_allow() {
+    local src="$1" dst="$2"
+    cp "$src" "$dst"
+    /usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$dst" 2>/dev/null || true
+}
+
+STRIPPED_DIR="$DIST_DIR/.entitlements-stripped"
+mkdir -p "$STRIPPED_DIR"
+strip_get_task_allow "$APP_ENTITLEMENTS"    "$STRIPPED_DIR/App.entitlements"
+strip_get_task_allow "$FINDER_ENTITLEMENTS" "$STRIPPED_DIR/Finder.entitlements"
+strip_get_task_allow "$XPC_ENTITLEMENTS"    "$STRIPPED_DIR/XPC.entitlements"
+
 mkdir -p "$BUILD_HOME" "$MODULE_CACHE" "$DIST_DIR"
 
 if [[ ! -f "$ICON_SOURCE" ]]; then
@@ -134,12 +148,15 @@ chmod +x \
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE/Contents/Resources/bin/mtsvn-rs"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" "$APP_BUNDLE/Contents/Resources/bin/MacSVNQuickActions"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" "$XPC_BUNDLE/Contents/Resources/bin/mtsvn-rs"
-/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$FINDER_ENTITLEMENTS" "$FINDER_BUNDLE/Contents/MacOS/MacSVNFinderSync"
+/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$STRIPPED_DIR/Finder.entitlements" "$FINDER_BUNDLE/Contents/MacOS/MacSVNFinderSync"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --preserve-metadata=entitlements "$FINDER_BUNDLE"
-/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$XPC_ENTITLEMENTS" "$XPC_BUNDLE"
-/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$APP_ENTITLEMENTS" "$APP_BUNDLE"
-/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$FINDER_ENTITLEMENTS" "$FINDER_BUNDLE/Contents/MacOS/MacSVNFinderSync"
+/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$STRIPPED_DIR/XPC.entitlements" "$XPC_BUNDLE"
+/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$STRIPPED_DIR/App.entitlements" "$APP_BUNDLE"
+/usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$STRIPPED_DIR/Finder.entitlements" "$FINDER_BUNDLE/Contents/MacOS/MacSVNFinderSync"
 /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --preserve-metadata=entitlements "$FINDER_BUNDLE"
+
+# Clean up temporary stripped entitlements
+rm -rf "$STRIPPED_DIR"
 
 echo "Built app bundle:"
 echo "$APP_BUNDLE"

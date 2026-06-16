@@ -273,9 +273,11 @@ public actor SQLiteStatusCacheStore {
         let result = databaseURL.path.withCString { path in
             sqlite3_open_v2(path, &database, flags, nil)
         }
-        guard result == SQLITE_OK else {
+        if result != SQLITE_OK {
+            let message = lastErrorMessage(from: database)
+            sqlite3_close(database)
             throw SQLiteStatusCacheError(
-                "Failed to open SQLite database at \(databaseURL.path): \(lastErrorMessage(from: database))"
+                "Failed to open SQLite database at \(databaseURL.path): \(message)"
             )
         }
         if readOnly {

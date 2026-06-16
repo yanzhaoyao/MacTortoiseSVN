@@ -564,6 +564,10 @@ public final class FinderSyncExtension: FIFinderSync {
                 try handle.close()
             } else {
                 try data.write(to: logURL, options: .atomic)
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600],
+                    ofItemAtPath: logURL.path
+                )
             }
         } catch {
             return
