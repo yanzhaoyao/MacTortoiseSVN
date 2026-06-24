@@ -541,7 +541,7 @@ struct WorkbenchRootView: View {
 
     private func workbenchIcon(size: CGFloat, cornerRadius: CGFloat, borderWidth: CGFloat) -> some View {
         let bundledImage = NSImage(named: "MacTortoiseSVNIcon")
-            ?? Bundle.module.image(forResource: "MacTortoiseSVNIcon")
+            ?? WorkbenchResourceBundle.bundle.image(forResource: "MacTortoiseSVNIcon")
             ?? NSImage(named: NSImage.applicationIconName)
             ?? NSImage(size: NSSize(width: size, height: size))
 

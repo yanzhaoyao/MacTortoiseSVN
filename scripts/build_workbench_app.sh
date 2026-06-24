@@ -3,10 +3,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD_CONFIG="${BUILD_CONFIG:-release}"
 BUILD_HOME="$ROOT_DIR/.tmp-home"
 MODULE_CACHE="$ROOT_DIR/.build/ModuleCache.noindex"
-SWIFT_BUILD_DIR="$ROOT_DIR/.build/arm64-apple-macosx/debug"
-RUST_BUILD_DIR="$ROOT_DIR/rust/target/debug"
+SWIFT_BUILD_DIR="$ROOT_DIR/.build/arm64-apple-macosx/$BUILD_CONFIG"
+RUST_BUILD_DIR="$ROOT_DIR/rust/target/$BUILD_CONFIG"
 DIST_DIR="$ROOT_DIR/dist"
 APP_NAME="MacTortoiseSVN"
 LEGACY_APP_NAME="MacSVNWorkbench"
@@ -73,29 +74,58 @@ env \
     HOME="$BUILD_HOME" \
     CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
     SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
-    swift build --product "$APP_NAME"
+    swift build -c "$BUILD_CONFIG" --product "$APP_NAME"
 
 env \
     HOME="$BUILD_HOME" \
     CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
     SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
-    swift build --product MacSVNStatusXPCService
+    swift build -c "$BUILD_CONFIG" --product MacSVNStatusXPCService
 
 env \
     HOME="$BUILD_HOME" \
     CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
     SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
-    swift build --product MacSVNFinderSync
+    swift build -c "$BUILD_CONFIG" --product MacSVNFinderSync
 
 env \
     HOME="$BUILD_HOME" \
     CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" \
     SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE" \
-    swift build --product MacSVNQuickActions
+    swift build -c "$BUILD_CONFIG" --product MacSVNQuickActions
 
 (
     cd "$ROOT_DIR/rust"
-    /opt/homebrew/bin/cargo build -q -p mtsvn-rs
+    if command -v /opt/homebrew/bin/cargo >/dev/null 2>&1; then
+        CARGO=/opt/homebrew/bin/cargo
+    elif command -v cargo >/dev/null 2>&1; then
+        CARGO=cargo
+    else
+        echo "warning: cargo 未安装，尝试复用已有 mtsvn-rs 二进制。" >&2
+        CARGO=""
+    fi
+
+    if [[ -n "$CARGO" ]]; then
+        if [[ "$BUILD_CONFIG" == "release" ]]; then
+            "$CARGO" build --release -q -p mtsvn-rs
+        else
+            "$CARGO" build -q -p mtsvn-rs
+        fi
+    elif [[ ! -x "$RUST_EXECUTABLE" ]]; then
+        for candidate in \
+            "/Applications/MacTortoiseSVN.app/Contents/Resources/bin/mtsvn-rs" \
+            "$ROOT_DIR/dist/MacTortoiseSVN.app/Contents/Resources/bin/mtsvn-rs"; do
+            if [[ -x "$candidate" ]]; then
+                RUST_EXECUTABLE="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [[ ! -x "$RUST_EXECUTABLE" ]]; then
+        echo "error: 找不到 mtsvn-rs，请安装 Rust 或保留一份可用的 mtsvn-rs。" >&2
+        exit 1
+    fi
 )
 
 rm -rf \
