@@ -26,6 +26,51 @@ func macSVNExtendedExecutablePath(currentPath: String?) -> String {
     return mergedPaths.joined(separator: ":")
 }
 
+struct MacSVNResolvedSVNExecutable: Sendable {
+    var launchPath: String
+    var argumentPrefix: [String]
+}
+
+private let macSVNResolvedSVNExecutableLock = NSLock()
+private nonisolated(unsafe) var macSVNResolvedSVNExecutableCache: MacSVNResolvedSVNExecutable?
+
+func macSVNResolvedSVNExecutable() -> MacSVNResolvedSVNExecutable {
+    macSVNResolvedSVNExecutableLock.lock()
+    if let cached = macSVNResolvedSVNExecutableCache {
+        macSVNResolvedSVNExecutableLock.unlock()
+        return cached
+    }
+    macSVNResolvedSVNExecutableLock.unlock()
+
+    for searchPath in macSVNPreferredExecutableSearchPaths {
+        let candidate = (searchPath as NSString).appendingPathComponent("svn")
+        if FileManager.default.isExecutableFile(atPath: candidate) {
+            let resolved = MacSVNResolvedSVNExecutable(launchPath: candidate, argumentPrefix: [])
+            macSVNResolvedSVNExecutableLock.lock()
+            macSVNResolvedSVNExecutableCache = resolved
+            macSVNResolvedSVNExecutableLock.unlock()
+            return resolved
+        }
+    }
+
+    let resolved = MacSVNResolvedSVNExecutable(launchPath: "/usr/bin/env", argumentPrefix: ["svn"])
+    macSVNResolvedSVNExecutableLock.lock()
+    macSVNResolvedSVNExecutableCache = resolved
+    macSVNResolvedSVNExecutableLock.unlock()
+    return resolved
+}
+
+func macSVNSubprocessEnvironment() -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    environment["PATH"] = macSVNExtendedExecutablePath(currentPath: environment["PATH"])
+    // Sandboxed GUI apps often inherit a non-UTF-8 locale, which makes svn
+    // fail with E000022 when paths or diff output contain UTF-8 text.
+    environment["LANG"] = "en_US.UTF-8"
+    environment["LC_ALL"] = "en_US.UTF-8"
+    environment["LC_CTYPE"] = "en_US.UTF-8"
+    return environment
+}
+
 public struct RustBridgeConfiguration: Sendable, Hashable, Codable {
     public var repositoryRoot: String
     public var cargoExecutable: String
@@ -88,11 +133,11 @@ struct RustBridgeInvocationResult: Sendable, Hashable {
 struct SubversionCLICommandRunner: SubversionCommandRunning {
     func run(_ request: SubversionCLIInvocationRequest) async throws -> SubversionCLIInvocationResult {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["svn"] + request.arguments
+        let resolvedSVN = macSVNResolvedSVNExecutable()
+        process.executableURL = URL(fileURLWithPath: resolvedSVN.launchPath)
+        process.arguments = resolvedSVN.argumentPrefix + request.arguments
 
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = macSVNExtendedExecutablePath(currentPath: environment["PATH"])
+        let environment = macSVNSubprocessEnvironment()
         process.environment = environment
 
         if let workingDirectory = request.workingDirectory {
@@ -144,8 +189,7 @@ struct ProcessRustBridgeRunner: RustBridgeCommandRunning {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: request.executablePath)
         process.arguments = request.arguments
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = macSVNExtendedExecutablePath(currentPath: environment["PATH"])
+        let environment = macSVNSubprocessEnvironment()
         process.environment = environment
 
         if let workingDirectory = request.workingDirectory {

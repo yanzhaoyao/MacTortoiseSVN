@@ -26,9 +26,15 @@ final class WorkbenchModel: NSObject, ObservableObject {
             rootPath: String,
             targetPath: String,
             status: VersionControlStatus,
-            propertyModified: Bool
+            propertyModified: Bool,
+            contentStamp: DiffContentStamp
         )
         case historyRevision(rootPath: String, revision: Int64)
+    }
+
+    private struct DiffContentStamp: Hashable {
+        var modificationTime: TimeInterval?
+        var fileSize: Int?
     }
 
     private struct AddPreviewConfirmation {
@@ -260,6 +266,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     private let runner = ProcessSubversionRunner()
     private var entryByPath: [String: Entry] = [:]
     private var diffPreviewTask: Task<Void, Never>?
+    private var diffPreviewDebounceTask: Task<Void, Never>?
     private var repositoryBrowserPreviewTask: Task<Void, Never>?
     private var lastDiffPreviewRequest: DiffPreviewRequestKey?
     private let externalDiffArtifactsRootURL: URL
@@ -1195,7 +1202,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
         }
         selectedPaths = [path]
         preferredDiffPreviewMode = .workingCopy
-        refreshDiffPreview(forceReload: true)
+        refreshDiffPreview()
     }
 
     // MARK: - Bookmark Management
@@ -1675,7 +1682,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
             applyLoadedEntries(freshEntries, rootPath: root)
             let appliedCommand = pendingWorkbenchCommand
             selectedPaths = selectionForFreshEntries(freshEntries, rootPath: root)
-            refreshDiffPreview(forceReload: true)
+            refreshDiffPreview()
             lastRefreshDate = snapshot.generatedAt
             if let appliedCommand {
                 statusNotice = finderReadyNotice(
@@ -2425,15 +2432,12 @@ final class WorkbenchModel: NSObject, ObservableObject {
             statusCenterConfiguration: statusCenterConfiguration
         )
 
-        if runtimePaths.hasBundledStatusService {
-            host = nil
-            xpcClient = StatusServiceXPCClient()
-        } else {
-            host = try StatusServiceHost(
-                configuration: baseConfiguration
-            )
-            xpcClient = nil
-        }
+        // Prefer the in-process host in the main app: it already has user-selected
+        // file access and avoids brittle XPC helper communication during refresh.
+        host = try StatusServiceHost(
+            configuration: baseConfiguration
+        )
+        xpcClient = runtimePaths.hasBundledStatusService ? StatusServiceXPCClient() : nil
         client = RustCommandBridgeSVNClient(
             configuration: baseConfiguration.clientConfiguration,
             bridgeConfiguration: runtimePaths.bridgeConfiguration
@@ -2452,45 +2456,45 @@ final class WorkbenchModel: NSObject, ObservableObject {
         rootPath: String,
         forceFullRefresh: Bool
     ) async throws -> BadgeSnapshot {
-        if let xpcClient {
-            return try await xpcClient.refresh(
-                rootPath: rootPath,
-                forceFullRefresh: forceFullRefresh
-            )
+        if let host {
+            if forceFullRefresh {
+                return try await host.refresh(rootPath: rootPath, forceFullRefresh: true)
+            }
+            return try await host.refreshIfNeeded(rootPath: rootPath)
         }
 
-        guard let host else {
+        guard let xpcClient else {
             throw WorkbenchError.notConfigured
         }
 
-        if forceFullRefresh {
-            return try await host.refresh(rootPath: rootPath, forceFullRefresh: true)
-        }
-        return try await host.refreshIfNeeded(rootPath: rootPath)
+        return try await xpcClient.refresh(
+            rootPath: rootPath,
+            forceFullRefresh: forceFullRefresh
+        )
     }
 
     private func startMonitoring(rootPath: String) async throws {
-        if let xpcClient {
-            try await xpcClient.startMonitoring(rootPath: rootPath)
+        if let host {
+            try await host.startMonitoring(rootPath: rootPath)
             return
         }
 
-        guard let host else {
+        guard let xpcClient else {
             throw WorkbenchError.notConfigured
         }
-        try await host.startMonitoring(rootPath: rootPath)
+        try await xpcClient.startMonitoring(rootPath: rootPath)
     }
 
     private func stopMonitoring(rootPath: String) async throws {
-        if let xpcClient {
-            try await xpcClient.stopMonitoring(rootPath: rootPath)
+        if let host {
+            try await host.stopMonitoring(rootPath: rootPath)
             return
         }
 
-        guard let host else {
+        guard let xpcClient else {
             throw WorkbenchError.notConfigured
         }
-        try await host.stopMonitoring(rootPath: rootPath)
+        try await xpcClient.stopMonitoring(rootPath: rootPath)
     }
 
     private func localizedErrorMessage(for error: Error) -> String {
@@ -2899,6 +2903,24 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     private func refreshDiffPreview(forceReload: Bool = false) {
+        diffPreviewDebounceTask?.cancel()
+        diffPreviewDebounceTask = nil
+
+        if forceReload {
+            loadDiffPreview(forceReload: true)
+            return
+        }
+
+        diffPreviewDebounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled, let self else {
+                return
+            }
+            self.loadDiffPreview(forceReload: false)
+        }
+    }
+
+    private func loadDiffPreview(forceReload: Bool) {
         guard let diffInspector else {
             clearDiffPreview(message: nil)
             return
@@ -2937,7 +2959,8 @@ final class WorkbenchModel: NSObject, ObservableObject {
                 rootPath: root,
                 targetPath: entry.id,
                 status: entry.status,
-                propertyModified: entry.item.propertyModified
+                propertyModified: entry.item.propertyModified,
+                contentStamp: diffContentStamp(for: entry.id)
             )
             emptyMessage = localizer.diffPreviewNoChanges(entry.displayName)
         case .historyRevision:
@@ -2960,7 +2983,9 @@ final class WorkbenchModel: NSObject, ObservableObject {
         diffPreviewTask?.cancel()
         diffPreviewTask = nil
         lastDiffPreviewRequest = requestKey
-        selectedDiffText = nil
+        if shouldClearDiffPreview(for: requestKey) {
+            selectedDiffText = nil
+        }
         diffPreviewMessage = nil
         diffPreviewError = nil
         isLoadingDiffPreview = true
@@ -2969,7 +2994,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
             do {
                 let preview: SVNDiffPreview
                 switch requestKey {
-                case let .workingCopy(rootPath, targetPath, _, _):
+                case let .workingCopy(rootPath, targetPath, _, _, _):
                     preview = try await diffInspector.workingCopyDiff(
                         at: targetPath,
                         workingCopyRoot: rootPath,
@@ -3031,7 +3056,33 @@ final class WorkbenchModel: NSObject, ObservableObject {
         }
     }
 
+    private func diffContentStamp(for path: String) -> DiffContentStamp {
+        let url = URL(fileURLWithPath: path)
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        return DiffContentStamp(
+            modificationTime: values?.contentModificationDate?.timeIntervalSince1970,
+            fileSize: values?.fileSize
+        )
+    }
+
+    private func shouldClearDiffPreview(for requestKey: DiffPreviewRequestKey) -> Bool {
+        guard let lastDiffPreviewRequest else {
+            return true
+        }
+
+        switch (lastDiffPreviewRequest, requestKey) {
+        case let (.workingCopy(_, lastPath, _, _, _), .workingCopy(_, path, _, _, _)):
+            return lastPath != path
+        case let (.historyRevision(_, lastRevision), .historyRevision(_, revision)):
+            return lastRevision != revision
+        default:
+            return true
+        }
+    }
+
     private func clearDiffPreview(message: String?) {
+        diffPreviewDebounceTask?.cancel()
+        diffPreviewDebounceTask = nil
         diffPreviewTask?.cancel()
         diffPreviewTask = nil
         lastDiffPreviewRequest = nil

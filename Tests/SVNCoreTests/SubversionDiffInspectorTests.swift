@@ -84,6 +84,33 @@ final class SubversionDiffInspectorTests: XCTestCase {
         }
     }
 
+    func testRevisionDiffCachesResultsForSameRevision() async throws {
+        let diff = "Index: README.md\n"
+        let runner = RecordingSubversionRunner(
+            results: [
+                SubversionCLIInvocationResult(stdout: diff, stderr: "", exitCode: 0),
+                SubversionCLIInvocationResult(stdout: "should-not-run", stderr: "", exitCode: 0),
+            ]
+        )
+        let inspector = SubversionDiffInspector(runner: runner)
+
+        let first = try await inspector.revisionDiff(
+            at: "/repo/project",
+            revision: 13,
+            context: .foreground
+        )
+        let second = try await inspector.revisionDiff(
+            at: "/repo/project",
+            revision: 13,
+            context: .foreground
+        )
+        let requests = await runner.requests()
+
+        XCTAssertEqual(first.rawText, diff)
+        XCTAssertEqual(second.rawText, diff)
+        XCTAssertEqual(requests.count, 1)
+    }
+
     func testRevisionDiffUsesChangeRevisionInvocation() async throws {
         let diff = """
         Index: README.md

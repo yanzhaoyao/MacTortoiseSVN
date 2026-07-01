@@ -270,11 +270,11 @@ public struct ProcessSubversionRunner: SubversionCommandRunning {
 
     public func run(_ request: SubversionCLIInvocationRequest) async throws -> SubversionCLIInvocationResult {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["svn"] + request.arguments
+        let resolvedSVN = macSVNResolvedSVNExecutable()
+        process.executableURL = URL(fileURLWithPath: resolvedSVN.launchPath)
+        process.arguments = resolvedSVN.argumentPrefix + request.arguments
 
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = macSVNExtendedExecutablePath(currentPath: environment["PATH"])
+        let environment = macSVNSubprocessEnvironment()
         process.environment = environment
 
         if let workingDirectory = request.workingDirectory {
