@@ -9,23 +9,8 @@ APP_TARGET="/Applications/MacTortoiseSVN.app"
 APP_BUNDLE_ID="com.morningstar.MacTortoiseSVN"
 LEGACY_APP_TARGET="/Applications/MacSVNWorkbench.app"
 LEGACY_APP_BUNDLE_ID="com.morningstar.MacTortoiseSVN.Workbench"
-APP_ENTITLEMENTS="$ROOT_DIR/Apps/MacSVNApp/MacSVNWorkbench.entitlements"
-XPC_SERVICE_ID="com.morningstar.MacTortoiseSVN.StatusService"
-XPC_SERVICE_PATH="$APP_TARGET/Contents/XPCServices/$XPC_SERVICE_ID.xpc"
-XPC_ENTITLEMENTS="$ROOT_DIR/Apps/MacSVNStatusService/MacSVNStatusService.entitlements"
 FINDER_EXTENSION_ID="com.morningstar.MacTortoiseSVN.FinderSync"
 FINDER_EXTENSION_PATH="$APP_TARGET/Contents/PlugIns/$FINDER_EXTENSION_ID.appex"
-FINDER_EXTENSION_EXECUTABLE="$FINDER_EXTENSION_PATH/Contents/MacOS/MacSVNFinderSync"
-FINDER_ENTITLEMENTS="$ROOT_DIR/Apps/MacSVNFinderSync/MacSVNFinderSync.entitlements"
-
-if [[ -n "${MACSVN_CODESIGN_IDENTITY:-}" ]]; then
-    CODESIGN_IDENTITY="$MACSVN_CODESIGN_IDENTITY"
-else
-    CODESIGN_IDENTITY="$(
-        security find-identity -v -p codesigning 2>/dev/null \
-            | awk -F'"' '/Apple Development:/ { print $2; exit }'
-    )"
-fi
 
 if [[ ! -x "$BUILD_SCRIPT" ]]; then
     echo "Missing build script: $BUILD_SCRIPT" >&2
@@ -57,13 +42,6 @@ done
 /bin/rm -rf "$LEGACY_APP_TARGET"
 /usr/bin/ditto "$APP_SOURCE" "$APP_TARGET"
 /usr/bin/xattr -dr com.apple.quarantine "$APP_TARGET" || true
-
-if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
-    /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$FINDER_ENTITLEMENTS" "$FINDER_EXTENSION_EXECUTABLE"
-    /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --preserve-metadata=entitlements "$FINDER_EXTENSION_PATH"
-    /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$XPC_ENTITLEMENTS" "$XPC_SERVICE_PATH"
-    /usr/bin/codesign --force --sign "$CODESIGN_IDENTITY" --generate-entitlement-der --entitlements "$APP_ENTITLEMENTS" "$APP_TARGET"
-fi
 
 /usr/bin/open -a "$APP_TARGET"
 /usr/bin/pluginkit -a "$FINDER_EXTENSION_PATH" || true

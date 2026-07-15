@@ -155,9 +155,8 @@ public actor SubversionWorkspaceOperator {
         accept: String = "postpone",
         context: SVNCommandContext
     ) async throws -> SVNUpdateResult {
-        let request = SubversionCLIInvocationRequest(
-            executablePath: "svn",
-            arguments: [
+        let arguments = await authenticatedArguments(
+            [
                 "update",
                 "--depth",
                 depth.rawValue,
@@ -166,6 +165,11 @@ public actor SubversionWorkspaceOperator {
                 "--",
                 rootPath,
             ],
+            workingCopyPath: rootPath
+        )
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: arguments,
             workingDirectory: rootPath
         )
         let result = try await run(request)
@@ -259,9 +263,8 @@ public actor SubversionWorkspaceOperator {
         depth: SVNDepth = .infinity,
         context: SVNCommandContext
     ) async throws -> SVNCheckoutResult {
-        let request = SubversionCLIInvocationRequest(
-            executablePath: "svn",
-            arguments: [
+        let arguments = await authenticatedArguments(
+            [
                 "checkout",
                 "--depth",
                 depth.rawValue,
@@ -269,6 +272,11 @@ public actor SubversionWorkspaceOperator {
                 repositoryURL,
                 destinationPath,
             ],
+            repositoryURL: repositoryURL
+        )
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: arguments,
             workingDirectory: (destinationPath as NSString).deletingLastPathComponent
         )
         let result = try await run(request)
@@ -286,9 +294,8 @@ public actor SubversionWorkspaceOperator {
         message: String,
         context: SVNCommandContext
     ) async throws -> SVNImportResult {
-        let request = SubversionCLIInvocationRequest(
-            executablePath: "svn",
-            arguments: [
+        let arguments = await authenticatedArguments(
+            [
                 "import",
                 "-m",
                 message,
@@ -296,6 +303,11 @@ public actor SubversionWorkspaceOperator {
                 sourcePath,
                 repositoryURL,
             ],
+            repositoryURL: repositoryURL
+        )
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: arguments,
             workingDirectory: (sourcePath as NSString).deletingLastPathComponent
         )
         let result = try await run(request)
@@ -338,9 +350,8 @@ public actor SubversionWorkspaceOperator {
         depth: SVNDepth = .infinity,
         context: SVNCommandContext
     ) async throws -> SVNSwitchResult {
-        let request = SubversionCLIInvocationRequest(
-            executablePath: "svn",
-            arguments: [
+        let arguments = await authenticatedArguments(
+            [
                 "switch",
                 "--depth",
                 depth.rawValue,
@@ -348,6 +359,12 @@ public actor SubversionWorkspaceOperator {
                 repositoryURL,
                 workingCopyPath,
             ],
+            workingCopyPath: workingCopyPath,
+            repositoryURL: repositoryURL
+        )
+        let request = SubversionCLIInvocationRequest(
+            executablePath: "svn",
+            arguments: arguments,
             workingDirectory: workingCopyPath
         )
         let result = try await run(request)
@@ -395,6 +412,39 @@ public actor SubversionWorkspaceOperator {
             )
         }
         return result
+    }
+
+    private func authenticatedArguments(
+        _ arguments: [String],
+        workingCopyPath: String? = nil,
+        repositoryURL: String? = nil
+    ) async -> [String] {
+        guard let command = arguments.first else {
+            return arguments
+        }
+
+        let authArgs: [String]
+        if let repositoryURL,
+           let credentials = MacSVNSVNConfigManager.storedCredentials(matchingRepositoryURL: repositoryURL)
+        {
+            authArgs = [
+                "--username",
+                credentials.username,
+                "--password",
+                credentials.password,
+                "--non-interactive",
+            ]
+        } else if let workingCopyPath {
+            authArgs = await macSVNAuthenticationArguments(forWorkingCopyPath: workingCopyPath)
+        } else {
+            return arguments
+        }
+
+        guard !authArgs.isEmpty else {
+            return arguments
+        }
+
+        return [command] + authArgs + Array(arguments.dropFirst())
     }
 
     private func parseUpdateResult(_ stdout: String, rootPath: String) -> SVNUpdateResult {

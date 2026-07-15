@@ -262,6 +262,41 @@ extension MacSVNLocalizer {
         useChineseWorkbenchText ? "更新工作副本失败。" : "Working copy update failed."
     }
 
+    var updateCancelled: String {
+        useChineseWorkbenchText ? "已取消更新。" : "Update cancelled."
+    }
+
+    var updateTimedOut: String {
+        useChineseWorkbenchText ? "更新超时，请重试或检查网络。" : "Update timed out. Please retry or check the network."
+    }
+
+    var cancelUpdateTitle: String {
+        useChineseWorkbenchText ? "取消更新" : "Cancel Update"
+    }
+
+    var svnAuthenticationTitle: String {
+        useChineseWorkbenchText ? "SVN 登录" : "SVN Sign In"
+    }
+
+    func svnAuthenticationMessage(repositoryURL: String) -> String {
+        if useChineseWorkbenchText {
+            return "仓库 \(repositoryURL) 需要账号和密码。凭据会保存在 MacTortoiseSVN 的应用配置中。"
+        }
+        return "Repository \(repositoryURL) requires a username and password. Credentials will be stored in MacTortoiseSVN's app configuration."
+    }
+
+    var svnUsernamePrompt: String {
+        useChineseWorkbenchText ? "用户名" : "Username"
+    }
+
+    var svnPasswordPrompt: String {
+        useChineseWorkbenchText ? "密码" : "Password"
+    }
+
+    var svnAuthenticationCancelled: String {
+        useChineseWorkbenchText ? "已取消 SVN 登录。" : "SVN sign-in was cancelled."
+    }
+
     var checkoutWorkingCopy: String {
         useChineseWorkbenchText ? "检出" : "Checkout"
     }

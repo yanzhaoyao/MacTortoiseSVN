@@ -192,6 +192,13 @@ struct WorkbenchRootView: View {
                         updateActivityIcon(activity, tint: tint)
                         updateActivityHeader(activity)
                         Spacer(minLength: 0)
+                        if case .running = activity.state {
+                            Button(localizer.cancelUpdateTitle) {
+                                model.cancelUpdateWorkingCopy()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
                         updateActivityMetrics(activity, tint: tint)
                     }
 
@@ -199,6 +206,14 @@ struct WorkbenchRootView: View {
                         HStack(alignment: .center, spacing: 12) {
                             updateActivityIcon(activity, tint: tint)
                             updateActivityHeader(activity)
+                            Spacer(minLength: 0)
+                            if case .running = activity.state {
+                                Button(localizer.cancelUpdateTitle) {
+                                    model.cancelUpdateWorkingCopy()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
                         }
                         updateActivityMetrics(activity, tint: tint)
                     }

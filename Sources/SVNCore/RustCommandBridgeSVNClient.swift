@@ -1,4 +1,5 @@
 import CoreTypes
+import Darwin
 import Foundation
 
 let macSVNPreferredExecutableSearchPaths = [
@@ -60,9 +61,22 @@ func macSVNResolvedSVNExecutable() -> MacSVNResolvedSVNExecutable {
     return resolved
 }
 
+func macSVNRealUserHomeDirectory() -> String {
+    if let passwdEntry = getpwuid(getuid()) {
+        return String(cString: passwdEntry.pointee.pw_dir)
+    }
+    return "/Users/\(NSUserName())"
+}
+
+func macSVNSubversionConfigDirectory() -> String {
+    MacSVNSVNConfigManager.prepareConfigDirectory()
+    return MacSVNSVNConfigManager.configDirectoryURL().path
+}
+
 func macSVNSubprocessEnvironment() -> [String: String] {
     var environment = ProcessInfo.processInfo.environment
     environment["PATH"] = macSVNExtendedExecutablePath(currentPath: environment["PATH"])
+    environment["SVN_CONFIG_DIR"] = macSVNSubversionConfigDirectory()
     // Sandboxed GUI apps often inherit a non-UTF-8 locale, which makes svn
     // fail with E000022 when paths or diff output contain UTF-8 text.
     environment["LANG"] = "en_US.UTF-8"

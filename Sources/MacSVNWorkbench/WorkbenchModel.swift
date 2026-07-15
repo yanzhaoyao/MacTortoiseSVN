@@ -45,6 +45,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     private struct TextPromptField {
         var label: String
         var value: String = ""
+        var isSecure: Bool = false
     }
 
     struct UpdateActivity: Equatable {
@@ -268,6 +269,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     private var diffPreviewTask: Task<Void, Never>?
     private var diffPreviewDebounceTask: Task<Void, Never>?
     private var repositoryBrowserPreviewTask: Task<Void, Never>?
+    private var updateWorkingCopyTask: Task<Void, Never>?
     private var lastDiffPreviewRequest: DiffPreviewRequestKey?
     private let externalDiffArtifactsRootURL: URL
     private var externalDiffArtifactDirectories: [URL] = []
@@ -734,8 +736,43 @@ final class WorkbenchModel: NSObject, ObservableObject {
     }
 
     func updateWorkingCopy() {
-        Task {
-            await performUpdateWorkingCopy()
+        cancelUpdateWorkingCopy(markAsCancelled: false)
+        updateWorkingCopyTask = Task { @MainActor [weak self] in
+            await self?.performUpdateWorkingCopy()
+        }
+    }
+
+    func cancelUpdateWorkingCopy(markAsCancelled: Bool = true) {
+        updateWorkingCopyTask?.cancel()
+        updateWorkingCopyTask = nil
+
+        guard markAsCancelled || isRunningWorkspaceOperation else {
+            return
+        }
+
+        isRunningWorkspaceOperation = false
+        if markAsCancelled {
+            lastError = localizer.updateCancelled
+            statusNotice = .updateFailed
+        }
+
+        if let key = currentUpdateActivityKey,
+           let activity = updateActivitiesByRoot[key],
+           case .running = activity.state
+        {
+            setUpdateActivity(
+                UpdateActivity(
+                    state: .failed(markAsCancelled ? localizer.updateCancelled : (lastError ?? localizer.updateFailed)),
+                    rootPath: activity.rootPath,
+                    displayPaths: [],
+                    revision: nil,
+                    hasConflicts: false,
+                    startedAt: activity.startedAt,
+                    completedAt: Date(),
+                    rawOutput: ""
+                ),
+                for: activity.rootPath
+            )
         }
     }
 
@@ -1208,6 +1245,7 @@ final class WorkbenchModel: NSObject, ObservableObject {
     // MARK: - Bookmark Management
 
     func switchToBookmark(_ bookmark: WorkspaceBookmark) {
+        cancelUpdateWorkingCopy(markAsCancelled: true)
         rootPath = bookmark.path
         clearLoadedEntries()
         var updated = bookmarks
@@ -2009,10 +2047,99 @@ final class WorkbenchModel: NSObject, ObservableObject {
         return name.isEmpty ? nil : name
     }
 
-    private func promptTextValues(title: String, fields: [TextPromptField]) -> [String]? {
+    private struct SVNCredentialPromptResult {
+        var username: String
+        var password: String
+    }
+
+    private func promptSVNCredentials(
+        repositoryURL: String
+    ) async -> SVNCredentialPromptResult? {
+        let defaultUsername = MacSVNSVNConfigManager.importedUsername(
+            matchingRepositoryURL: repositoryURL
+        ) ?? ""
+
+        guard
+            let values = await promptTextValuesAsync(
+                title: localizer.svnAuthenticationTitle,
+                informativeText: localizer.svnAuthenticationMessage(repositoryURL: repositoryURL),
+                fields: [
+                    TextPromptField(label: localizer.svnUsernamePrompt, value: defaultUsername),
+                    TextPromptField(label: localizer.svnPasswordPrompt, isSecure: true),
+                ]
+            )
+        else {
+            return nil
+        }
+
+        return SVNCredentialPromptResult(username: values[0], password: values[1])
+    }
+
+    private func resolveRepositoryURL(rootPath: String, fallback: String) async -> String {
+        if let url = repositorySummary?.repositoryURL ?? repositorySummary?.repositoryRootURL,
+           !url.isEmpty
+        {
+            return url
+        }
+
+        if let url = try? await macSVNWorkingCopyRepositoryURL(workingCopyPath: rootPath) {
+            return url
+        }
+
+        return fallback
+    }
+
+    private func ensureSVNCredentials(
+        repositoryURL: String,
+        workingCopyPath: String
+    ) async -> Bool {
+        if MacSVNSVNConfigManager.hasStoredCredentials(matchingRepositoryURL: repositoryURL) {
+            return true
+        }
+
+        guard let credentials = await promptSVNCredentials(repositoryURL: repositoryURL) else {
+            lastError = localizer.svnAuthenticationCancelled
+            return false
+        }
+
+        do {
+            try await macSVNStoreCredentials(
+                username: credentials.username,
+                password: credentials.password,
+                workingCopyPath: workingCopyPath
+            )
+            return true
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            return false
+        }
+    }
+
+    private func promptTextValuesAsync(
+        title: String,
+        informativeText: String? = nil,
+        fields: [TextPromptField]
+    ) async -> [String]? {
+        await MainActor.run {
+            promptTextValues(
+                title: title,
+                informativeText: informativeText,
+                fields: fields
+            )
+        }
+    }
+
+    private func promptTextValues(
+        title: String,
+        informativeText: String? = nil,
+        fields: [TextPromptField]
+    ) -> [String]? {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = title
+        if let informativeText {
+            alert.informativeText = informativeText
+        }
         alert.addButton(withTitle: localizer.runButtonTitle)
         alert.addButton(withTitle: localizer.cancelTitle)
 
@@ -2032,7 +2159,12 @@ final class WorkbenchModel: NSObject, ObservableObject {
             label.font = .systemFont(ofSize: 12, weight: .medium)
             label.widthAnchor.constraint(equalToConstant: 132).isActive = true
 
-            let textField = NSTextField(string: field.value)
+            let textField: NSTextField
+            if field.isSecure {
+                textField = NSSecureTextField(string: field.value)
+            } else {
+                textField = NSTextField(string: field.value)
+            }
             textField.font = .systemFont(ofSize: 12)
             textField.widthAnchor.constraint(equalToConstant: 360).isActive = true
 
@@ -2173,6 +2305,27 @@ final class WorkbenchModel: NSObject, ObservableObject {
             return
         }
 
+        let configuredRoot: String
+        do {
+            configuredRoot = try await configureServicesIfNeeded()
+        } catch {
+            lastError = localizedErrorMessage(for: error)
+            statusNotice = .updateFailed
+            return
+        }
+
+        let repositoryURL = await resolveRepositoryURL(
+            rootPath: configuredRoot,
+            fallback: requestedRoot
+        )
+        guard await ensureSVNCredentials(
+            repositoryURL: repositoryURL,
+            workingCopyPath: configuredRoot
+        ) else {
+            statusNotice = .updateFailed
+            return
+        }
+
         isRunningWorkspaceOperation = true
         statusNotice = .updatingWorkingCopy
         setUpdateActivity(
@@ -2188,54 +2341,127 @@ final class WorkbenchModel: NSObject, ObservableObject {
             ),
             for: requestedRoot
         )
-        defer { isRunningWorkspaceOperation = false }
+        defer {
+            isRunningWorkspaceOperation = false
+            updateWorkingCopyTask = nil
+        }
 
-        do {
-            let root = try await configureServicesIfNeeded()
-            guard let workspaceOperator else {
-                throw WorkbenchError.notConfigured
-            }
+        var shouldRetryAfterAuthentication = true
+        while !Task.isCancelled {
+            do {
+                let root = try await configureServicesIfNeeded()
+                guard let workspaceOperator else {
+                    throw WorkbenchError.notConfigured
+                }
 
-            let result = try await workspaceOperator.update(
-                rootPath: root,
-                context: .foreground
-            )
-            lastError = nil
-            statusNotice = .updatedWorkingCopy(
-                pathCount: result.updatedPaths.count,
-                revision: result.resultingRevision,
-                hasConflicts: result.hasConflicts
-            )
-            setUpdateActivity(
-                UpdateActivity(
-                    state: .completed,
-                    rootPath: root,
-                    displayPaths: displayPathsForUpdate(result.updatedPaths, rootPath: root),
+                let result = try await withTimeout(seconds: 90) {
+                    try await workspaceOperator.update(
+                        rootPath: root,
+                        context: .foreground
+                    )
+                }
+                try Task.checkCancellation()
+                lastError = nil
+                statusNotice = .updatedWorkingCopy(
+                    pathCount: result.updatedPaths.count,
                     revision: result.resultingRevision,
-                    hasConflicts: result.hasConflicts,
-                    startedAt: updateActivityStartedAt(for: root),
-                    completedAt: Date(),
-                    rawOutput: result.rawOutput
-                ),
-                for: root
-            )
-            await enqueueRefresh(forceFullRefresh: true)
-        } catch {
-            lastError = localizedErrorMessage(for: error)
-            statusNotice = .updateFailed
-            setUpdateActivity(
-                UpdateActivity(
-                    state: .failed(lastError ?? localizer.updateFailed),
-                    rootPath: Self.standardizedPath(requestedRoot),
-                    displayPaths: [],
-                    revision: nil,
-                    hasConflicts: false,
-                    startedAt: updateActivityStartedAt(for: requestedRoot),
-                    completedAt: Date(),
-                    rawOutput: ""
-                ),
-                for: requestedRoot
-            )
+                    hasConflicts: result.hasConflicts
+                )
+                setUpdateActivity(
+                    UpdateActivity(
+                        state: .completed,
+                        rootPath: root,
+                        displayPaths: displayPathsForUpdate(result.updatedPaths, rootPath: root),
+                        revision: result.resultingRevision,
+                        hasConflicts: result.hasConflicts,
+                        startedAt: updateActivityStartedAt(for: root),
+                        completedAt: Date(),
+                        rawOutput: result.rawOutput
+                    ),
+                    for: root
+                )
+                await enqueueRefresh(forceFullRefresh: true)
+                return
+            } catch is CancellationError {
+                lastError = localizer.updateCancelled
+                statusNotice = .updateFailed
+                setUpdateActivity(
+                    UpdateActivity(
+                        state: .failed(localizer.updateCancelled),
+                        rootPath: Self.standardizedPath(requestedRoot),
+                        displayPaths: [],
+                        revision: nil,
+                        hasConflicts: false,
+                        startedAt: updateActivityStartedAt(for: requestedRoot),
+                        completedAt: Date(),
+                        rawOutput: ""
+                    ),
+                    for: requestedRoot
+                )
+                return
+            } catch {
+                if let workbenchError = error as? WorkbenchError,
+                   case .operationFailed(let message) = workbenchError,
+                   message.contains("超时") || message.lowercased().contains("timeout")
+                {
+                    lastError = localizer.updateTimedOut
+                    statusNotice = .updateFailed
+                    setUpdateActivity(
+                        UpdateActivity(
+                            state: .failed(localizer.updateTimedOut),
+                            rootPath: Self.standardizedPath(requestedRoot),
+                            displayPaths: [],
+                            revision: nil,
+                            hasConflicts: false,
+                            startedAt: updateActivityStartedAt(for: requestedRoot),
+                            completedAt: Date(),
+                            rawOutput: ""
+                        ),
+                        for: requestedRoot
+                    )
+                    return
+                }
+
+                if shouldRetryAfterAuthentication,
+                   macSVNIsAuthenticationError(error),
+                   let credentials = await promptSVNCredentials(
+                       repositoryURL: repositorySummary?.repositoryURL
+                           ?? repositorySummary?.repositoryRootURL
+                           ?? requestedRoot
+                   )
+                {
+                    shouldRetryAfterAuthentication = false
+                    do {
+                        let root = try await configureServicesIfNeeded()
+                        try await macSVNStoreCredentials(
+                            username: credentials.username,
+                            password: credentials.password,
+                            workingCopyPath: root
+                        )
+                        continue
+                    } catch {
+                        lastError = localizedErrorMessage(for: error)
+                    }
+                } else {
+                    lastError = localizedErrorMessage(for: error)
+                }
+
+                statusNotice = .updateFailed
+                setUpdateActivity(
+                    UpdateActivity(
+                        state: .failed(lastError ?? localizer.updateFailed),
+                        rootPath: Self.standardizedPath(requestedRoot),
+                        displayPaths: [],
+                        revision: nil,
+                        hasConflicts: false,
+                        startedAt: updateActivityStartedAt(for: requestedRoot),
+                        completedAt: Date(),
+                        rawOutput: ""
+                    ),
+                    for: requestedRoot
+                )
+                return
+            }
         }
     }
 
