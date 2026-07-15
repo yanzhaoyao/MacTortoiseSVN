@@ -8,5 +8,5 @@ rust/target/
 .swiftpm/
 .tocodex/
 .vscode/
-dist/MacTortoiseSVN.app/
+dist/
 Docs/CompetitiveRequirements.md
